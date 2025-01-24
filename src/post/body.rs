@@ -189,7 +189,7 @@ impl PostEmbed {
     pub fn to_text(&self) -> String {
         match self.service_provider.as_str() {
             "youtube" => {
-                format!("[![youtube](https://img.youtube.com/vi/{}/0.jpg)](https://www.youtube.com/watch?v={})",self.id, self.id)
+                format!("[![youtube](https://img.youtube.com/vi/{}/0.jpg)](https://www.youtube.com/watch?v={})",self.content_id, self.content_id)
             }
             "google_forms" => {
                 format!(
