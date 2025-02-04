@@ -40,7 +40,7 @@ pub fn filter_unsynced_posts(
 
         match post_updated {
             Some(post_updated) => post_updated < updated,
-            None => false,
+            None => true,
         }
     });
     Ok(posts)
