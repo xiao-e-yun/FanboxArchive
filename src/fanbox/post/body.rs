@@ -12,6 +12,7 @@ pub struct PostBody {
     pub blocks: Option<Vec<PostBlock>>,
     pub images: Option<Vec<PostImage>>,
     pub videos: Option<Vec<PostVideo>>,
+    pub video: Option<PostVideo>,
     pub files: Option<Vec<PostFile>>,
     pub image_map: Option<BTreeMap<String, PostImage>>,
     pub file_map: Option<BTreeMap<String, PostFile>>,

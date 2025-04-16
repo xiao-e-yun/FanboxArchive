@@ -24,7 +24,11 @@ impl PostBody {
             content.push(UnsyncContent::File(file));
         }
 
-        for video in self.videos.clone().unwrap_or_default() {
+        for video in self.videos.iter().flatten() {
+            content.push(UnsyncContent::Text(video.to_text()));
+        }
+
+        if let Some(video) = &self.video {
             content.push(UnsyncContent::Text(video.to_text()));
         }
 
@@ -136,7 +140,7 @@ impl PostVideo {
     pub fn to_text(&self) -> String {
         match self.service_provider.as_str() {
             "youtube" => {
-                format!("[![youtube](https://img.youtube.com/vi/{}/0.jpg)](https://www.youtube.com/watch?v={})",self.video_id, self.video_id)
+                format!("[<img alt=\"Youtube thumbnail\" src=\"https://img.youtube.com/vi/{}/0.jpg\">](https://www.youtube.com/watch?v={})",self.video_id, self.video_id)
             }
             _ => {
                 error!("Unknown video provider ({})", self.service_provider);
