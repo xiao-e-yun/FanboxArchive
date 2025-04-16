@@ -38,7 +38,10 @@ impl PostBody {
     pub fn text(&self) -> Vec<UnsyncContent> {
         let mut content = vec![];
         if let Some(text) = self.text.clone() {
-            content.push(UnsyncContent::Text(text.replace("\n", "<br>")));
+            let text = text.replace("\n", "  \n");
+            if !text.is_empty() {
+                content.push(UnsyncContent::Text(text));
+            }
         }
 
         if let Some(blocks) = self.blocks.as_ref() {
@@ -56,7 +59,7 @@ impl PostBlock {
         match self {
             PostBlock::P { text, styles } => {
                 if text.is_empty() {
-                    UnsyncContent::Text("<br>".to_string())
+                    UnsyncContent::Text("  \n".to_string())
                 } else {
                     UnsyncContent::Text(Self::style_text(text, styles))
                 }
