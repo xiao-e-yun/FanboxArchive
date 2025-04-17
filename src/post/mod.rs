@@ -6,7 +6,7 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::{
     api::fanbox::FanboxClient,
     config::Config,
-    fanbox::{Post, PostListItem},
+    fanbox::{Comment, Post, PostListItem},
 };
 use file::{download_files, FanboxFileMeta};
 use log::{debug, error, info};
@@ -46,13 +46,19 @@ pub fn filter_unsynced_posts(
 pub async fn get_posts(
     config: &Config,
     posts: Vec<PostListItem>,
-) -> Result<Vec<Post>, Box<dyn std::error::Error>> {
+) -> Result<Vec<(Post, Vec<Comment>)>, Box<dyn std::error::Error>> {
     let client = FanboxClient::new(config);
     let mut tasks = vec![];
     for post in posts {
         let client = client.clone();
         tasks.push(tokio::spawn(async move {
-            client.get_post(post.id).await.expect("Failed to get post")
+            let post_meta = client.get_post(&post.id);
+            let comments = client.get_post_comments(&post.id, post.comment_count);
+
+            (
+                post_meta.await.expect("failed to get post"),
+                comments.await.expect("failed to get comments of post")
+            )
         }));
     }
 
@@ -69,16 +75,16 @@ pub async fn sync_posts(
     manager: &mut PostArchiverManager<Connection>,
     config: &Config,
     author: AuthorId,
-    posts: Vec<Post>,
+    posts: Vec<(Post, Vec<Comment>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manager = manager.transaction()?;
     let total_posts = posts.len();
 
     let mut synced_posts = 0;
     let mut post_files = vec![];
-    for post in posts {
+    for (post,comments) in posts {
         info!(" syncing {}", post.title);
-        match sync_post(&manager, author, post) {
+        match sync_post(&manager, author, post, comments) {
             Ok(files) => {
                 synced_posts += 1;
                 info!(" + success");
@@ -113,6 +119,7 @@ pub async fn sync_posts(
         manager: &PostArchiverManager<impl PostArchiverConnection>,
         author: AuthorId,
         post: Post,
+        comments: Vec<Comment>
     ) -> Result<Vec<(PathBuf, ImportFileMetaMethod)>, Box<dyn std::error::Error>> {
         let source = get_source_link(&post.creator_id, &post.id);
 
@@ -135,6 +142,8 @@ pub async fn sync_posts(
 
         let content = post.body.content();
 
+        let comments = comments.into_iter().map(|c| c.into() ).collect();
+
         let post = UnsyncPost::new(author)
             .source(Some(source))
             .published(post.published_datetime)
@@ -142,7 +151,8 @@ pub async fn sync_posts(
             .tags(tags)
             .title(post.title)
             .content(content)
-            .thumb(thumb);
+            .thumb(thumb)
+            .comments(comments);
 
         let (_, files) = post.sync(manager)?;
 

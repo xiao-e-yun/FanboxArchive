@@ -39,6 +39,46 @@ pub struct Post {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Hash)]
 #[serde(rename_all = "camelCase")]
+pub struct PostComments {
+    pub view_mode: String,
+    pub comment_list: Option<PostCommentList>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct PostCommentList {
+    pub items: Vec<Comment>,
+    pub next_url: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct Comment {
+    pub body: String,
+    pub created_datetime: DateTime<Utc>,
+    pub id: String,
+    pub is_liked: bool,
+    pub is_own: bool,
+    pub like_count: u32,
+    pub parent_comment_id: String,
+    #[serde(default)]
+    pub replies: Vec<Comment>,
+    pub root_comment_id: String,
+    pub user: User,
+}
+
+impl Into<post_archiver::Comment> for Comment {
+    fn into(self) -> post_archiver::Comment {
+        post_archiver::Comment {
+            user: self.user.name,
+            text: self.body,
+            replies: self.replies.into_iter().map(|c| c.into()).collect(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Hash)]
+#[serde(rename_all = "camelCase")]
 pub struct PostShort {
     id: String,
     title: String,

@@ -7,12 +7,13 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     config::Config,
-    fanbox::{FollowingCreator, Post, PostListItem, SupportingCreator},
+    fanbox::{Comment, FollowingCreator, Post, PostComments, PostListItem, SupportingCreator},
 };
 
 use super::ArchiveClient;
 
 pub type APIPost = Post;
+pub type APIPostComments = Vec<Comment>;
 pub type APIListCreatorPost = Vec<PostListItem>;
 pub type APIListSupportingCreator = Vec<SupportingCreator>;
 pub type APIListFollowingCreator = Vec<FollowingCreator>;
@@ -141,10 +142,27 @@ impl FanboxClient {
         Ok(posts)
     }
 
-    pub async fn get_post(&self, post_id: String) -> Result<APIPost, Box<dyn std::error::Error>> {
+    pub async fn get_post(&self, post_id: &str) -> Result<APIPost, Box<dyn std::error::Error>> {
         let url = format!("https://api.fanbox.cc/post.info?postId={}", post_id);
         let post: APIPost = self.fetch(&url).await.expect("Failed to get post");
         Ok(post)
+    }
+
+    pub async fn get_post_comments(&self, post_id: &str, comment_count: u32) -> Result<APIPostComments, Box<dyn std::error::Error>> {
+
+        if comment_count == 0 {
+            return Ok(vec![])
+        };
+
+        let mut next_url = Some(format!("https://api.fanbox.cc/post.getComments?postId={}&limit=10", post_id));
+        let mut comments = vec![];
+        while let Some(url) = next_url {
+            let response: PostComments = self.fetch(&url).await.expect("Failed to get post comments");
+            let Some(response) = response.comment_list else { break };
+            next_url = response.next_url;
+            comments.extend(response.items.into_iter());
+        };
+        Ok(comments)
     }
 }
 
