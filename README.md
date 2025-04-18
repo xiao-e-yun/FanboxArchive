@@ -1,5 +1,5 @@
 # Fanbox Archive
-[Get Start](https://github.com/xiao-e-yun/FanboxArchive/wiki)
+[Get Started](https://github.com/xiao-e-yun/FanboxArchive/wiki)
 
 > Check [PostArchiver](https://github.com/xiao-e-yun/PostArchiver) to know more info.
 
