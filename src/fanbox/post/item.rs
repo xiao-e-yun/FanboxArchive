@@ -31,4 +31,12 @@ pub struct PostListItem {
 pub enum Cover {
     CoverImage { url: String },
     PostImage { url: String },
+    Video { video: Video },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct Video {
+    pub service_provider: String,
+    pub video_id: String,
 }
