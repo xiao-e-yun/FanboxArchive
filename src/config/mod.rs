@@ -57,13 +57,12 @@ impl Config {
             let dt = Utc::now().timestamp_millis() as u64 / 1000;
             let major = dt % 2 + 4;
             let webkit = dt / 2 % 64;
-            let edg = dt / 128 % 5 + 131;
-            config.user_agent = format!("Mozilla/{}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{} (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.{} Edg/{}.0.0.0",
+            let chrome = dt / 128 % 5 + 132;
+            config.user_agent = format!("Mozilla/{}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{} (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.{}",
                 major,
                 webkit,
-                edg + 1,
+                chrome,
                 webkit,
-                edg
             );
         }
 
