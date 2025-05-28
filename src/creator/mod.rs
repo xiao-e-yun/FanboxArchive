@@ -78,14 +78,20 @@ pub fn sync_creators(
     let manager = manager.transaction()?;
 
     for creator in creators.into_iter() {
-        let alias = format!("fanbox:{}", creator.creator_id);
-        let link = Link::new(
+        let fanbox_alias = format!("fanbox:{}", creator.creator_id);
+        let fanbox_link = Link::new(
             "fanbox",
             &format!("https://{}.fanbox.cc/", creator.creator_id),
         );
+
+        let pixiv_alias = format!("pixiv:{}", creator.user.user_id);
+        let pixiv_link = Link::new(
+            "pixiv",
+            &format!("https://www.pixiv.net/users/{}", creator.user.user_id),
+        );
         let author = UnsyncAuthor::new(creator.name.to_string())
-            .alias(vec![alias])
-            .links(vec![link])
+            .alias(vec![pixiv_alias, fanbox_alias])
+            .links(vec![fanbox_link, pixiv_link])
             .sync(&manager)?;
 
         list.push((author, creator.creator_id));
