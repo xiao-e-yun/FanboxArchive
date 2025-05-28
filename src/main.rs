@@ -16,7 +16,6 @@ use post_archiver::{manager::PostArchiverManager, utils::VERSION};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
-    config.init_logger();
 
     info!("# Fanbox Archive #");
     info!("");

@@ -1,8 +1,10 @@
 pub mod save_type;
 
+use chrono::Utc;
 use clap::{arg, Parser};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
+use log::info;
 use save_type::SaveType;
 use std::path::PathBuf;
 
@@ -37,6 +39,9 @@ pub struct Config {
     /// Skip free post
     #[arg(long, name = "skip-free")]
     skip_free: bool,
+    /// User agent when blocking
+    #[arg(long, name = "user-agent", default_value = "")]
+    user_agent: String,
     #[command(flatten)]
     pub verbose: Verbosity<InfoLevel>,
 }
@@ -45,7 +50,24 @@ impl Config {
     /// Parse the configuration from the environment and command line arguments
     pub fn parse() -> Self {
         dotenv().ok();
-        <Self as Parser>::parse()
+        let mut config = <Self as Parser>::parse();
+        config.init_logger();
+
+        if config.user_agent.is_empty() {
+            let dt = Utc::now().timestamp_millis() as u64 / 1000;
+            let major = dt % 2 + 4;
+            let webkit = dt / 2 % 64;
+            let edg = dt / 128 % 5 + 131;
+            config.user_agent = format!("Mozilla/{}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{} (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.{} Edg/{}.0.0.0",
+                major,
+                webkit,
+                edg + 1,
+                webkit,
+                edg
+            );
+        }
+
+        config
     }
     /// Create a logger with the configured verbosity level
     pub fn init_logger(&self) {
@@ -61,6 +83,10 @@ impl Config {
         } else {
             format!("FANBOXSESSID={}", self.session)
         }
+    }
+    /// Get the user agent for blocking
+    pub fn user_agent(&self) -> String {
+        self.user_agent.clone()
     }
     pub fn overwrite(&self) -> bool {
         self.overwrite

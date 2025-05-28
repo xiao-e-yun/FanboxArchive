@@ -22,6 +22,7 @@ pub type APIListCreatorPaginate = Vec<String>;
 #[derive(Debug, Clone)]
 pub struct FanboxClient {
     inner: ArchiveClient,
+    user_agent: String,
     session: String,
     overwrite: bool,
 }
@@ -31,20 +32,22 @@ impl FanboxClient {
         let inner = ArchiveClient::new(config);
         let session = config.session();
         let overwrite = config.overwrite();
+        let user_agent = config.user_agent();
+
         Self {
             inner,
             session,
             overwrite,
+            user_agent,
         }
     }
 
     fn wrap_request(&self, builder: RequestBuilder) -> RequestBuilder {
-        const USER_AGENT: &str =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0";
+
         builder
             .header(header::COOKIE, &self.session)
             .header(header::ORIGIN, "https://www.fanbox.cc")
-            .header(header::USER_AGENT, USER_AGENT)
+            .header(header::USER_AGENT, &self.user_agent)
     }
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T, FanboxAPIResponseError> {
