@@ -4,7 +4,6 @@ use chrono::Utc;
 use clap::{arg, Parser};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
-use log::info;
 use save_type::SaveType;
 use std::path::PathBuf;
 
