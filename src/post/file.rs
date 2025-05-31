@@ -32,9 +32,9 @@ pub async fn download_files(
         let client = client.clone();
         tasks.push(tokio::spawn(async move {
             client
-                .download(&url, path)
+                .download(&url, path.clone())
                 .await
-                .expect("Failed to download file");
+                .map_err(|e| format!("Failed to download {} to {}: {}", url, path.display(), e))
         }));
     }
 
