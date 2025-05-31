@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use futures::future::join_all;
+use log::error;
 use mime_guess::MimeGuess;
 use post_archiver::importer::file_meta::{ImportFileMetaMethod, UnsyncFileMeta};
 use serde_json::json;
@@ -31,10 +32,9 @@ pub async fn download_files(
 
         let client = client.clone();
         tasks.push(tokio::spawn(async move {
-            client
-                .download(&url, path)
-                .await
-                .expect("Failed to download file");
+            if let Err(e) = client.download(&url, path.clone()).await {
+                error!("Failed to download {} to {}: {}", url, path.display(), e);
+            }
         }));
     }
 
