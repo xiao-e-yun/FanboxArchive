@@ -30,7 +30,7 @@ pub struct FanboxClient {
 impl FanboxClient {
     pub fn new(config: &Config) -> Self {
         let inner = ArchiveClient::new(config);
-        let session = config.session();
+        let session = config.cookies();
         let overwrite = config.overwrite();
         let user_agent = config.user_agent();
 

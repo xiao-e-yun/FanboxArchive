@@ -4,8 +4,9 @@ use chrono::Utc;
 use clap::{arg, Parser};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
+use log::info;
 use save_type::SaveType;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::fanbox::{Creator, PostListItem};
 
@@ -41,6 +42,10 @@ pub struct Config {
     /// User agent when blocking
     #[arg(long, name = "user-agent", default_value = "")]
     user_agent: String,
+    /// Custom cookies.  Exapmle: `name=value; name2=value2; ...`  (cf_clearance is required for blocking)
+    #[arg(long, name = "cookies", default_value = "")]
+    cookies: String,
+
     #[command(flatten)]
     pub verbose: Verbosity<InfoLevel>,
 }
@@ -74,13 +79,24 @@ impl Config {
             .format_target(false)
             .init();
     }
-    /// Get the session cookie
-    pub fn session(&self) -> String {
-        if self.session.starts_with("FANBOXSESSID=") {
-            self.session.clone()
-        } else {
-            format!("FANBOXSESSID={}", self.session)
-        }
+    /// Get the cookies
+    pub fn cookies(&self) -> String {
+        let session = (
+            "FANBOXSESSID", 
+            self.session.trim_start_matches("FANBOXSESSID=").trim_end_matches(';').trim()
+        );
+
+        self.cookies.split(';')
+            .filter_map(|cookie| {
+                let trimmed = cookie.trim();
+                (!trimmed.is_empty()).then(|| trimmed.split_once('=')).flatten()
+            })
+            .chain(std::iter::once(session))
+            .collect::<HashMap<_, _>>()
+            .into_iter()
+            .map(|(name, value)| format!("{}={}", name.trim(), value.trim()))
+            .collect::<Vec<_>>()
+            .join(";")
     }
     /// Get the user agent for blocking
     pub fn user_agent(&self) -> String {
