@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process::exit};
 
 use log::{debug, error};
 use reqwest::header;
@@ -52,6 +52,8 @@ impl FanboxClient {
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T, FanboxAPIResponseError> {
         let (client, _semaphore) = self.inner.client().await;
+
+        debug!("Fetching {}", url);
         let request = client.get(url);
         let request = self.wrap_request(request);
         let response = request.send().await.expect("Failed to send request");
@@ -69,7 +71,17 @@ impl FanboxClient {
                         }
                         Err(response)
                     }
-                    Err(_) => panic!("{:?}\n{}", error, String::from_utf8_lossy(&response)),
+                    Err(_) => {
+                        let response = String::from_utf8_lossy(&response);
+                        error!("Failed to parse response: {}", error);
+
+                        error!("Response URL: {}", url);
+                        error!("Response cookies: {}",  &self.session);
+                        error!("Response user-agent: {}", &self.user_agent);
+
+                        error!("Response body: {}", response);
+                        exit(1);
+                    },
                 }
             }
         }
