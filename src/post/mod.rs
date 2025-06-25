@@ -103,7 +103,7 @@ pub async fn sync_posts(
     ) -> Result<(UnsyncPost, HashMap<String, String>), Box<dyn std::error::Error>> {
         let source = get_source_link(&post.creator_id, &post.id);
 
-        let mut tags = vec!["fanbox".to_string()];
+        let mut tags = vec![];
         if post.fee_required == 0 {
             tags.push("free".to_string());
         }
