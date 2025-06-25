@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Loading Creators Post");
     for (author, creator_id) in authors {
-        info!("{}", &author.name);
+        info!("{}", creator_id);
         let mut posts = get_post_urls(&config, &creator_id).await?;
 
         let total_post = posts.len();
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let posts = get_posts(&config, posts).await?;
         if !posts.is_empty() {
-            sync_posts(&mut manager, &config, author.id, posts).await?;
+            sync_posts(&mut manager, &config, author, posts).await?;
         }
 
         info!("");

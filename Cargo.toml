@@ -9,7 +9,7 @@ repository = "https://github.com/xiao-e-yun/FanboxArchive"
 
 
 [dependencies]
-post-archiver = { version = "0.3.3", features = ["importer"] }
+post-archiver = { version = "0.4.1", features = ["importer"] }
 # other dependencies
 chrono = { version = "0.4.38", features = ["serde"] }
 rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }

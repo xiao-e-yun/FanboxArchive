@@ -1,7 +1,7 @@
 use std::{collections::HashSet, error::Error};
 
 use log::info;
-use post_archiver::{importer::UnsyncAuthor, manager::PostArchiverManager, Author, Link};
+use post_archiver::{importer::{UnsyncAlias, UnsyncAuthor}, manager::PostArchiverManager, AuthorId};
 use rusqlite::Connection;
 
 use crate::{api::fanbox::FanboxClient, config::Config, fanbox::Creator};
@@ -73,30 +73,24 @@ pub fn display_creators(creators: &[Creator]) {
 pub fn sync_creators(
     manager: &mut PostArchiverManager<Connection>,
     creators: Vec<Creator>,
-) -> Result<Vec<(Author, String)>, Box<dyn Error>> {
-    let mut list = vec![];
+) -> Result<Vec<(AuthorId, String)>, Box<dyn Error>> {
     let manager = manager.transaction()?;
 
-    for creator in creators.into_iter() {
-        let fanbox_alias = format!("fanbox:{}", creator.creator_id);
-        let fanbox_link = Link::new(
-            "fanbox",
-            &format!("https://{}.fanbox.cc/", creator.creator_id),
-        );
+    let fanbox_platform = manager.import_platform("fanbox".to_string())?;
+    let pixiv_platform = manager.import_platform("pixiv".to_string())?;
 
-        let pixiv_alias = format!("pixiv:{}", creator.user.user_id);
-        let pixiv_link = Link::new(
-            "pixiv",
-            &format!("https://www.pixiv.net/users/{}", creator.user.user_id),
-        );
-        let author = UnsyncAuthor::new(creator.name.to_string())
-            .alias(vec![pixiv_alias, fanbox_alias])
-            .links(vec![fanbox_link, pixiv_link])
-            .sync(&manager)?;
+    let authors = creators.into_iter()
+        .map(|creator| {
+            let author = UnsyncAuthor::new(creator.name.to_string())
+                .aliases(vec![
+                    UnsyncAlias::new(fanbox_platform, creator.creator_id.clone()).source(format!("https://{}.fanbox.cc/", creator.creator_id)),
+                    UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).source(format!("https://www.pixiv.net/users/{}", creator.user.user_id)),
+                ])
+                .sync(&manager)?;
 
-        list.push((author, creator.creator_id));
-    }
+            Ok((author, creator.creator_id))
+        }).collect::<Result<Vec<_>,rusqlite::Error>>()?;
 
     manager.commit()?;
-    Ok(list)
+    Ok(authors)
 }

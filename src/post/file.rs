@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use futures::future::join_all;
 use log::error;
 use mime_guess::MimeGuess;
-use post_archiver::importer::file_meta::{ImportFileMetaMethod, UnsyncFileMeta};
+use post_archiver::importer::file_meta::UnsyncFileMeta;
 use serde_json::json;
 
 use crate::{
@@ -12,16 +12,13 @@ use crate::{
 };
 
 pub async fn download_files(
-    files: Vec<(PathBuf, ImportFileMetaMethod)>,
+    files: Vec<(PathBuf, String)>,
     client: &FanboxClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tasks = vec![];
 
     let mut last_folder = PathBuf::new();
-    for (path, method) in files {
-        let ImportFileMetaMethod::Url(url) = method else {
-            unimplemented!()
-        };
+    for (path, url) in files {
 
         // Create folder if it doesn't exist
         let folder = path.parent().unwrap();
@@ -47,8 +44,8 @@ where
     Self: Sized,
 {
     fn from_url(url: String) -> Self;
-    fn from_image(image: PostImage) -> Self;
-    fn from_file(file: PostFile) -> Self;
+    fn from_image(image: PostImage) -> (Self, String);
+    fn from_file(file: PostFile) -> (Self, String);
 }
 
 impl FanboxFileMeta for UnsyncFileMeta {
@@ -58,49 +55,49 @@ impl FanboxFileMeta for UnsyncFileMeta {
             .first_or_octet_stream()
             .to_string();
         let extra = Default::default();
-        let method = ImportFileMetaMethod::Url(url);
 
         Self {
             filename,
             mime,
             extra,
-            method,
         }
     }
-    fn from_image(image: PostImage) -> Self {
+    fn from_image(image: PostImage) -> (Self, String) {
         let filename = image.filename();
         let mime = image.mime();
         let extra = HashMap::from([
             ("width".to_string(), json!(image.width)),
             ("height".to_string(), json!(image.height)),
         ]);
-        let method = ImportFileMetaMethod::Url(image.original_url);
 
-        Self {
-            filename,
-            mime,
-            extra,
-            method,
-        }
+        (
+            Self {
+                filename,
+                mime,
+                extra,
+            },
+            image.original_url,
+        )
     }
-    fn from_file(file: PostFile) -> Self {
+    fn from_file(file: PostFile) -> (Self, String) {
         let filename = file.filename();
         let mime = file.mime();
         let extra = Default::default();
-        let method = ImportFileMetaMethod::Url(file.url);
 
-        Self {
-            filename,
-            mime,
-            extra,
-            method,
-        }
+        (
+            Self {
+                filename,
+                mime,
+                extra,
+            },
+            file.url,
+        )
     }
 }
 
 impl PostBody {
-    pub fn files(&self) -> Vec<UnsyncFileMeta> {
-        let mut files: Vec<UnsyncFileMeta> = vec![];
+    pub fn files(&self) -> Vec<(UnsyncFileMeta, String)> {
+        let mut files: Vec<(UnsyncFileMeta, String)> = vec![];
 
         if let Some(list) = self.images.clone() {
             files.extend(post_images_to_files(list));
@@ -111,26 +108,20 @@ impl PostBody {
         };
 
         if let Some(list) = self.files.clone() {
-            files.extend(psot_files_to_files(list));
+            files.extend(post_files_to_files(list));
         }
 
         if let Some(map) = self.file_map.clone() {
-            files.extend(psot_files_to_files(map.into_values().collect()));
+            files.extend(post_files_to_files(map.into_values().collect()));
         };
 
         // util function
-        fn post_images_to_files(images: Vec<PostImage>) -> Vec<UnsyncFileMeta> {
-            images
-                .into_iter()
-                .map(UnsyncFileMeta::from_image)
-                .collect()
+        fn post_images_to_files(images: Vec<PostImage>) -> Vec<(UnsyncFileMeta, String)> {
+            images.into_iter().map(UnsyncFileMeta::from_image).collect()
         }
 
-        fn psot_files_to_files(files: Vec<PostFile>) -> Vec<UnsyncFileMeta> {
-            files
-                .into_iter()
-                .map(UnsyncFileMeta::from_file)
-                .collect()
+        fn post_files_to_files(files: Vec<PostFile>) -> Vec<(UnsyncFileMeta, String)> {
+            files.into_iter().map(UnsyncFileMeta::from_file).collect()
         }
 
         files

@@ -15,12 +15,12 @@ impl PostBody {
         let mut content = self.text();
 
         for image in self.images.clone().unwrap_or_default() {
-            let file = UnsyncFileMeta::from_image(image);
+            let (file, _) = UnsyncFileMeta::from_image(image);
             content.push(UnsyncContent::File(file));
         }
 
         for file in self.files.clone().unwrap_or_default() {
-            let file = UnsyncFileMeta::from_file(file);
+            let (file, _) = UnsyncFileMeta::from_file(file);
             content.push(UnsyncContent::File(file));
         }
 
@@ -72,7 +72,7 @@ impl PostBlock {
                 let Some(image) = images.get(&image_id) else {
                     return UnsyncContent::Text(format!("[Image Mismatch: {}]", image_id));
                 };
-                let file = UnsyncFileMeta::from_image(image.clone());
+                let (file, _) = UnsyncFileMeta::from_image(image.clone());
                 UnsyncContent::File(file)
             }
             PostBlock::File { file_id } => {
@@ -80,7 +80,7 @@ impl PostBlock {
                 let Some(file) = files.get(&file_id) else {
                     return UnsyncContent::Text(format!("[File Mismatch: {}]", file_id));
                 };
-                let file = UnsyncFileMeta::from_file(file.clone());
+                let (file, _) = UnsyncFileMeta::from_file(file.clone());
                 UnsyncContent::File(file)
             }
             PostBlock::Embed { embed_id } => {
