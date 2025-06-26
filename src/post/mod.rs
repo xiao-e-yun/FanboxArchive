@@ -1,7 +1,7 @@
 mod body;
 pub mod file;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format};
 
 use crate::{
     api::fanbox::FanboxClient,
@@ -11,7 +11,7 @@ use crate::{
 use file::{download_files, FanboxFileMeta};
 use log::info;
 use post_archiver::{
-    importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncTag},
+    importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
     AuthorId, PlatformId,
 };
@@ -118,6 +118,10 @@ pub async fn sync_posts(
             })
             .collect::<Vec<_>>();
 
+        let collections = post.tags.into_iter().map(|tag| 
+            UnsyncCollection::new(tag.clone(), format!("https://{}.fanbox.cc/tags/{}", post.creator_id, tag))
+        ).collect();
+
         let thumb = post.cover_image_url.clone().map(|url| {
             let mut meta = UnsyncFileMeta::from_url(url.clone());
             meta.extra = HashMap::from([
@@ -145,6 +149,7 @@ pub async fn sync_posts(
         let post = UnsyncPost::new(platform, source, post.title, content)
             .thumb(thumb.map(|v| v.0))
             .comments(comments)
+            .collections(collections)
             .authors(vec![author])
             .published(post.published_datetime)
             .updated(post.updated_datetime)
