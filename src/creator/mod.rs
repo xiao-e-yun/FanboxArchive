@@ -83,8 +83,8 @@ pub fn sync_creators(
         .map(|creator| {
             let author = UnsyncAuthor::new(creator.name.to_string())
                 .aliases(vec![
-                    UnsyncAlias::new(fanbox_platform, creator.creator_id.clone()).source(format!("https://{}.fanbox.cc/", creator.creator_id)),
-                    UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).source(format!("https://www.pixiv.net/users/{}", creator.user.user_id)),
+                    UnsyncAlias::new(fanbox_platform, creator.creator_id.clone()).link(format!("https://{}.fanbox.cc/", creator.creator_id)),
+                    UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).link(format!("https://www.pixiv.net/users/{}", creator.user.user_id)),
                 ])
                 .sync(&manager)?;
 
