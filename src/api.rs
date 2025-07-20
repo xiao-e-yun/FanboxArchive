@@ -1,6 +1,6 @@
-use std::{fs::File, path::PathBuf, process::exit};
+use std::{fs::File, path::PathBuf};
 
-use log::{debug, error};
+use log::debug;
 use post_archiver_utils::{ArchiveClient, Error, Result};
 use reqwest::{
     header::{self, HeaderMap},

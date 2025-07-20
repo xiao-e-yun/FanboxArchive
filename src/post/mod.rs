@@ -1,7 +1,7 @@
 mod body;
 pub mod file;
 
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use crate::{
     api::FanboxClient,
@@ -9,6 +9,7 @@ use crate::{
     fanbox::{Comment, Post, PostListItem},
 };
 use file::{download_files, FanboxFileMeta};
+use futures::future::join;
 use log::info;
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
@@ -17,6 +18,7 @@ use post_archiver::{
 };
 use rusqlite::Connection;
 use serde_json::json;
+use tokio::task::JoinSet;
 
 pub async fn get_post_urls(
     config: &Config,
@@ -43,27 +45,31 @@ pub fn filter_unsynced_posts(
 }
 
 pub async fn get_posts(
+    config: &Config,
     client: &FanboxClient,
     posts: Vec<PostListItem>,
 ) -> Result<Vec<(Post, Vec<Comment>)>, Box<dyn std::error::Error>> {
-    let mut tasks = vec![];
+    let pb = config.progress("posts");
+    pb.set_length(posts.len() as u64);
+
+    let mut tasks = JoinSet::new();
+
     for post in posts {
         let client = client.clone();
-        tasks.push(tokio::spawn(async move {
-            let post_meta = client.get_post(&post.id);
-            let comments = client.get_post_comments(&post.id, post.comment_count);
-
-            (
-                post_meta.await.expect("failed to get post"),
-                comments.await.expect("failed to get comments of post"),
+        tasks.spawn(async move {
+            join(
+                client.get_post(&post.id),
+                client.get_post_comments(&post.id, post.comment_count),
             )
-        }));
+            .await
+        });
     }
 
     let mut posts = Vec::new();
-
-    for task in tasks {
-        posts.push(task.await?);
+    while let Some(Ok((post, comments))) = tasks.join_next().await {
+        let (post, comments) = (post?, comments?);
+        posts.push((post, comments));
+        pb.inc(1);
     }
 
     Ok(posts)
@@ -71,6 +77,7 @@ pub async fn get_posts(
 
 pub async fn sync_posts(
     manager: &mut PostArchiverManager<Connection>,
+    client: &FanboxClient,
     config: &Config,
     author: AuthorId,
     posts: Vec<(Post, Vec<Comment>)>,
@@ -87,13 +94,13 @@ pub async fn sync_posts(
 
     let (_posts, post_files) = manager.import_posts(posts, true)?;
 
-    // Use another client for downloading files
-    let client = FanboxClient::new(config);
-    download_files(post_files, &client).await?;
+    let pb = config.progress("files");
+    pb.set_length(post_files.len() as u64);
+    download_files(&pb, client, post_files).await?;
 
     manager.commit()?;
 
-    info!("{} total", total_posts);
+    info!("{total_posts} total");
 
     fn conversion_post(
         platform: PlatformId,
@@ -118,9 +125,16 @@ pub async fn sync_posts(
             })
             .collect::<Vec<_>>();
 
-        let collections = post.tags.into_iter().map(|tag| 
-            UnsyncCollection::new(tag.clone(), format!("https://{}.fanbox.cc/tags/{}", post.creator_id, tag))
-        ).collect();
+        let collections = post
+            .tags
+            .into_iter()
+            .map(|tag| {
+                UnsyncCollection::new(
+                    tag.clone(),
+                    format!("https://{}.fanbox.cc/tags/{}", post.creator_id, tag),
+                )
+            })
+            .collect();
 
         let thumb = post.cover_image_url.clone().map(|url| {
             let mut meta = UnsyncFileMeta::from_url(url.clone());
@@ -151,5 +165,5 @@ pub async fn sync_posts(
 }
 
 pub fn get_source_link(creator_id: &str, post_id: &str) -> String {
-    format!("https://{}.fanbox.cc/posts/{}", creator_id, post_id)
+    format!("https://{creator_id}.fanbox.cc/posts/{post_id}")
 }

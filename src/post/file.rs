@@ -1,23 +1,24 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use futures::future::join_all;
 use log::error;
 use mime_guess::MimeGuess;
 use post_archiver::importer::file_meta::UnsyncFileMeta;
 use serde_json::json;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    api::FanboxClient,
-    fanbox::{PostBody, PostFile, PostImage},
+    api::FanboxClient, config::{Progress}, fanbox::{PostBody, PostFile, PostImage}
 };
 
 pub async fn download_files(
-    files: Vec<(PathBuf, String)>,
+    pb: &Progress, 
     client: &FanboxClient,
+    files: Vec<(PathBuf, String)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut tasks = vec![];
+    let mut tasks = JoinSet::new();
 
     let mut last_folder = PathBuf::new();
+    let semphore = Arc::new(Semaphore::new(3));
     for (path, url) in files {
         // Create folder if it doesn't exist
         let folder = path.parent().unwrap();
@@ -26,15 +27,20 @@ pub async fn download_files(
             tokio::fs::create_dir_all(folder).await?;
         }
 
+        let semphore = semphore.clone();
         let client = client.clone();
-        tasks.push(tokio::spawn(async move {
+        let pb = pb.clone();
+        tasks.spawn(async move {
+            let permit = semphore.acquire().await.unwrap();
             if let Err(e) = client.download(&url, path.clone()).await {
                 error!("Failed to download {} to {}: {}", url, path.display(), e);
-            }
-        }));
+            };
+            pb.inc(1);
+        });
     }
 
-    join_all(tasks).await;
+    tasks.join_all().await;
+
     Ok(())
 }
 

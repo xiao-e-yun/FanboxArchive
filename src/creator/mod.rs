@@ -30,11 +30,12 @@ pub async fn get_creators(config: &Config, client: &FanboxClient) -> Result<Vec<
     info!("");
 
     let total = creators.len();
-    info!("Total: {} creators", total);
+    info!("Total: {total} creators");
     creators.retain(|c| config.filter_creator(c));
     let filtered = creators.len();
-    info!("Excluded: {} creators", total - filtered);
-    info!("Included: {} creators", filtered);
+    let offset = total - filtered;
+    info!("Excluded: {offset} creators");
+    info!("Included: {filtered} creators");
     info!("");
     Ok(creators.into_iter().collect())
 }
