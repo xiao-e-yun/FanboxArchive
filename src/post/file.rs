@@ -31,7 +31,7 @@ pub async fn download_files(
         let client = client.clone();
         let pb = pb.clone();
         tasks.spawn(async move {
-            let permit = semphore.acquire().await.unwrap();
+            let _permit = semphore.acquire().await.unwrap();
             if let Err(e) = client.download(&url, path.clone()).await {
                 error!("Failed to download {} to {}: {}", url, path.display(), e);
             };
