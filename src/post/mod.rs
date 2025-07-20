@@ -1,10 +1,10 @@
 mod body;
 pub mod file;
 
-use std::{collections::HashMap, fmt::format};
+use std::{collections::HashMap};
 
 use crate::{
-    api::fanbox::FanboxClient,
+    api::FanboxClient,
     config::Config,
     fanbox::{Comment, Post, PostListItem},
 };
@@ -20,9 +20,9 @@ use serde_json::json;
 
 pub async fn get_post_urls(
     config: &Config,
+    client: &FanboxClient,
     creator_id: &str,
 ) -> Result<Vec<PostListItem>, Box<dyn std::error::Error>> {
-    let client = FanboxClient::new(config);
     let mut items = client.get_posts(creator_id).await?;
     items.retain(|item| config.filter_post(item));
     Ok(items)
@@ -43,10 +43,9 @@ pub fn filter_unsynced_posts(
 }
 
 pub async fn get_posts(
-    config: &Config,
+    client: &FanboxClient,
     posts: Vec<PostListItem>,
 ) -> Result<Vec<(Post, Vec<Comment>)>, Box<dyn std::error::Error>> {
-    let client = FanboxClient::new(config);
     let mut tasks = vec![];
     for post in posts {
         let client = client.clone();
@@ -88,6 +87,7 @@ pub async fn sync_posts(
 
     let (_posts, post_files) = manager.import_posts(posts, true)?;
 
+    // Use another client for downloading files
     let client = FanboxClient::new(config);
     download_files(post_files, &client).await?;
 
@@ -100,7 +100,7 @@ pub async fn sync_posts(
         author: AuthorId,
         post: Post,
         comments: Vec<Comment>,
-    ) -> Result<(UnsyncPost, HashMap<String, String>), Box<dyn std::error::Error>> {
+    ) -> Result<UnsyncPost<String>, Box<dyn std::error::Error>> {
         let source = get_source_link(&post.creator_id, &post.id);
 
         let mut tags = vec![];
@@ -135,17 +135,6 @@ pub async fn sync_posts(
 
         let comments = comments.into_iter().map(|c| c.into()).collect();
 
-        let mut files = post
-            .body
-            .files()
-            .into_iter()
-            .map(|(meta, url)| (meta.filename.clone(), url))
-            .collect::<HashMap<_, _>>();
-
-        if let Some((thumb, url)) = &thumb {
-            files.insert(thumb.filename.clone(), url.clone());
-        }
-
         let post = UnsyncPost::new(platform, source, post.title, content)
             .thumb(thumb.map(|v| v.0))
             .comments(comments)
@@ -155,7 +144,7 @@ pub async fn sync_posts(
             .updated(post.updated_datetime)
             .tags(tags);
 
-        Ok((post, files))
+        Ok(post)
     }
 
     Ok(())

@@ -32,8 +32,8 @@ pub struct Config {
     /// Blacklist of creator IDs
     #[arg(short, long, num_args = 0..)]
     blacklist: Vec<String>,
-    /// Limit download concurrency
-    #[arg(long, default_value = "5")]
+    /// Limit fetch number of posts per minute
+    #[arg(long, default_value = "120")]
     limit: usize,
     /// Skip free post
     #[arg(long, name = "skip-free")]
@@ -61,11 +61,7 @@ impl Config {
             let major = dt % 2 + 4;
             let webkit = dt / 2 % 64;
             let chrome = dt / 128 % 5 + 132;
-            config.user_agent = format!("Mozilla/{}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{} (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.{}",
-                major,
-                webkit,
-                chrome,
-                webkit,
+            config.user_agent = format!("Mozilla/{major}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{webkit} (KHTML, like Gecko) Chrome/{chrome}.0.0.0 Safari/537.{webkit}",
             );
         }
 
@@ -81,14 +77,20 @@ impl Config {
     /// Get the cookies
     pub fn cookies(&self) -> String {
         let session = (
-            "FANBOXSESSID", 
-            self.session.trim_start_matches("FANBOXSESSID=").trim_end_matches(';').trim()
+            "FANBOXSESSID",
+            self.session
+                .trim_start_matches("FANBOXSESSID=")
+                .trim_end_matches(';')
+                .trim(),
         );
 
-        self.cookies.split(';')
+        self.cookies
+            .split(';')
             .filter_map(|cookie| {
                 let trimmed = cookie.trim();
-                (!trimmed.is_empty()).then(|| trimmed.split_once('=')).flatten()
+                (!trimmed.is_empty())
+                    .then(|| trimmed.split_once('='))
+                    .flatten()
             })
             .chain(std::iter::once(session))
             .collect::<HashMap<_, _>>()

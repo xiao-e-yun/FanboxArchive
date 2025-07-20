@@ -4,17 +4,16 @@ use log::info;
 use post_archiver::{importer::{UnsyncAlias, UnsyncAuthor}, manager::PostArchiverManager, AuthorId};
 use rusqlite::Connection;
 
-use crate::{api::fanbox::FanboxClient, config::Config, fanbox::Creator};
+use crate::{api::FanboxClient, config::Config, fanbox::Creator};
 
-pub async fn get_creators(config: &Config) -> Result<Vec<Creator>, Box<dyn Error>> {
+pub async fn get_creators(config: &Config, client: &FanboxClient) -> Result<Vec<Creator>, Box<dyn Error>> {
     let accepts = config.accepts();
     info!("Accepts:");
     for accept in accepts.list() {
-        info!(" + {}", accept);
+        info!(" + {accept}");
     }
     info!("");
 
-    let client = FanboxClient::new(config);
     let mut creators: HashSet<Creator> = HashSet::new();
     info!("Checking creators");
     if accepts.accept_following() {

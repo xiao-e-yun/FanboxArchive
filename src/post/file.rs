@@ -7,7 +7,7 @@ use post_archiver::importer::file_meta::UnsyncFileMeta;
 use serde_json::json;
 
 use crate::{
-    api::fanbox::FanboxClient,
+    api::FanboxClient,
     fanbox::{PostBody, PostFile, PostImage},
 };
 
@@ -19,7 +19,6 @@ pub async fn download_files(
 
     let mut last_folder = PathBuf::new();
     for (path, url) in files {
-
         // Create folder if it doesn't exist
         let folder = path.parent().unwrap();
         if last_folder != folder {
@@ -44,11 +43,11 @@ where
     Self: Sized,
 {
     fn from_url(url: String) -> Self;
-    fn from_image(image: PostImage) -> (Self, String);
-    fn from_file(file: PostFile) -> (Self, String);
+    fn from_image(image: PostImage) -> Self;
+    fn from_file(file: PostFile) -> Self;
 }
 
-impl FanboxFileMeta for UnsyncFileMeta {
+impl FanboxFileMeta for UnsyncFileMeta<String> {
     fn from_url(url: String) -> Self {
         let filename = url.split('/').next_back().unwrap().to_string();
         let mime = MimeGuess::from_path(&filename)
@@ -60,9 +59,10 @@ impl FanboxFileMeta for UnsyncFileMeta {
             filename,
             mime,
             extra,
+            data: url,
         }
     }
-    fn from_image(image: PostImage) -> (Self, String) {
+    fn from_image(image: PostImage) -> Self {
         let filename = image.filename();
         let mime = image.mime();
         let extra = HashMap::from([
@@ -70,34 +70,30 @@ impl FanboxFileMeta for UnsyncFileMeta {
             ("height".to_string(), json!(image.height)),
         ]);
 
-        (
-            Self {
-                filename,
-                mime,
-                extra,
-            },
-            image.original_url,
-        )
+        Self {
+            filename,
+            mime,
+            extra,
+            data: image.original_url,
+        }
     }
-    fn from_file(file: PostFile) -> (Self, String) {
+    fn from_file(file: PostFile) -> Self {
         let filename = file.filename();
         let mime = file.mime();
         let extra = Default::default();
 
-        (
-            Self {
-                filename,
-                mime,
-                extra,
-            },
-            file.url,
-        )
+        Self {
+            filename,
+            mime,
+            extra,
+            data: file.url,
+        }
     }
 }
 
 impl PostBody {
-    pub fn files(&self) -> Vec<(UnsyncFileMeta, String)> {
-        let mut files: Vec<(UnsyncFileMeta, String)> = vec![];
+    pub fn files(&self) -> Vec<UnsyncFileMeta<String>> {
+        let mut files: Vec<UnsyncFileMeta<String>> = vec![];
 
         if let Some(list) = self.images.clone() {
             files.extend(post_images_to_files(list));
@@ -116,11 +112,11 @@ impl PostBody {
         };
 
         // util function
-        fn post_images_to_files(images: Vec<PostImage>) -> Vec<(UnsyncFileMeta, String)> {
+        fn post_images_to_files(images: Vec<PostImage>) -> Vec<UnsyncFileMeta<String>> {
             images.into_iter().map(UnsyncFileMeta::from_image).collect()
         }
 
-        fn post_files_to_files(files: Vec<PostFile>) -> Vec<(UnsyncFileMeta, String)> {
+        fn post_files_to_files(files: Vec<PostFile>) -> Vec<UnsyncFileMeta<String>> {
             files.into_iter().map(UnsyncFileMeta::from_file).collect()
         }
 

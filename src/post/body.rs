@@ -11,16 +11,16 @@ use crate::{
 use super::file::FanboxFileMeta;
 
 impl PostBody {
-    pub fn content(&self) -> Vec<UnsyncContent> {
+    pub fn content(&self) -> Vec<UnsyncContent<String>> {
         let mut content = self.text();
 
         for image in self.images.clone().unwrap_or_default() {
-            let (file, _) = UnsyncFileMeta::from_image(image);
+            let file = UnsyncFileMeta::from_image(image);
             content.push(UnsyncContent::File(file));
         }
 
         for file in self.files.clone().unwrap_or_default() {
-            let (file, _) = UnsyncFileMeta::from_file(file);
+            let file = UnsyncFileMeta::from_file(file);
             content.push(UnsyncContent::File(file));
         }
 
@@ -35,7 +35,7 @@ impl PostBody {
         content
     }
 
-    pub fn text(&self) -> Vec<UnsyncContent> {
+    pub fn text(&self) -> Vec<UnsyncContent<String>> {
         let mut content = vec![];
         if let Some(text) = self.text.clone() {
             let text = text.replace("\n", "  \n");
@@ -55,7 +55,7 @@ impl PostBody {
 }
 
 impl PostBlock {
-    pub fn to_text(self, body: &PostBody) -> UnsyncContent {
+    pub fn to_text(self, body: &PostBody) -> UnsyncContent<String> {
         match self {
             PostBlock::P { text, styles } => {
                 if text.is_empty() {
@@ -72,7 +72,7 @@ impl PostBlock {
                 let Some(image) = images.get(&image_id) else {
                     return UnsyncContent::Text(format!("[Image Mismatch: {}]", image_id));
                 };
-                let (file, _) = UnsyncFileMeta::from_image(image.clone());
+                let file = UnsyncFileMeta::from_image(image.clone());
                 UnsyncContent::File(file)
             }
             PostBlock::File { file_id } => {
@@ -80,7 +80,7 @@ impl PostBlock {
                 let Some(file) = files.get(&file_id) else {
                     return UnsyncContent::Text(format!("[File Mismatch: {}]", file_id));
                 };
-                let (file, _) = UnsyncFileMeta::from_file(file.clone());
+                let file = UnsyncFileMeta::from_file(file.clone());
                 UnsyncContent::File(file)
             }
             PostBlock::Embed { embed_id } => {
