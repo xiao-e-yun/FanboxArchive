@@ -107,6 +107,17 @@ impl Config {
     pub fn accepts(&self) -> SaveType {
         self.save
     }
+    pub fn skip_free(&self) -> bool {
+        self.skip_free
+    }
+
+    pub fn whitelist(&self) -> &[String] {
+        &self.whitelist
+    }
+
+    pub fn blacklist(&self) -> &[String] {
+        &self.blacklist
+    }
 
     pub fn output(&self) -> &PathBuf {
         &self.output

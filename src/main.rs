@@ -12,18 +12,24 @@ use creator::{display_creators, get_creators, sync_creators};
 use log::{info, warn};
 use post::{filter_unsynced_posts, get_post_urls, get_posts, sync_posts};
 use post_archiver::{manager::PostArchiverManager, utils::VERSION};
+use post_archiver_utils::display_metadata;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
 
-    info!("# Fanbox Archive #");
-    info!("");
-    info!("==================================");
-    info!("PostArchiver version: v{}", VERSION);
-    info!("Overwrite: {}",config.overwrite());
-    info!("Output: {}",config.output().display());
-    info!("==================================");
+    display_metadata("Fanbox Archive", &[
+        ("Version", format!("v{}", env!("CARGO_PKG_VERSION")).as_str()),
+        ("PostArchiver Version", VERSION),
+        ("Overwrite", config.overwrite().to_string().as_str()),
+        ("Force", config.force().to_string().as_str()),
+        ("Limit", config.limit().to_string().as_str()),
+        ("Skip Free", config.skip_free().to_string().as_str()),
+        ("Accepts", config.accepts().list().join(", ").as_str()),
+        ("Whitelist", config.whitelist().join(", ").as_str()),
+        ("Blacklist", config.blacklist().join(", ").as_str()),
+        ("Output", config.output().display().to_string().as_str()),
+    ]);
 
     if !config.output().exists() {
         warn!("Creating output folder");
