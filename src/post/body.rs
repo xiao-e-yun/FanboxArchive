@@ -70,7 +70,7 @@ impl PostBlock {
             PostBlock::Image { image_id } => {
                 let images = body.image_map.as_ref().unwrap();
                 let Some(image) = images.get(&image_id) else {
-                    return UnsyncContent::Text(format!("[Image Mismatch: {}]", image_id));
+                    return UnsyncContent::Text(format!("[Image Mismatch: {image_id}]"));
                 };
                 let file = UnsyncFileMeta::from_image(image.clone());
                 UnsyncContent::File(file)
@@ -78,14 +78,14 @@ impl PostBlock {
             PostBlock::File { file_id } => {
                 let files = body.file_map.as_ref().unwrap();
                 let Some(file) = files.get(&file_id) else {
-                    return UnsyncContent::Text(format!("[File Mismatch: {}]", file_id));
+                    return UnsyncContent::Text(format!("[File Mismatch: {file_id}]"));
                 };
                 let file = UnsyncFileMeta::from_file(file.clone());
                 UnsyncContent::File(file)
             }
             PostBlock::Embed { embed_id } => {
                 let Some(embed) = body.embed_map.as_ref().unwrap().get(&embed_id) else {
-                    return UnsyncContent::Text(format!("[Embed not found: {}]", embed_id));
+                    return UnsyncContent::Text(format!("[Embed not found: {embed_id}]"));
                 };
                 UnsyncContent::Text(embed.to_text())
             }
@@ -97,7 +97,7 @@ impl PostBlock {
             PostBlock::UrlEmbed { url_embed_id } => {
                 let Some(url_embed) = body.url_embed_map.as_ref().unwrap().get(&url_embed_id)
                 else {
-                    return UnsyncContent::Text(format!("[URL Embed not found: {}]", url_embed_id));
+                    return UnsyncContent::Text(format!("[URL Embed not found: {url_embed_id}]"));
                 };
                 UnsyncContent::Text(url_embed.to_text())
             }
@@ -117,7 +117,7 @@ impl PostBlock {
             let (prefix, suffix) = match style.ty.as_str() {
                 "bold" => ("**", "**"),
                 _ => {
-                    error!("Unknown style: {:?}", style);
+                    error!("Unknown style: {style:?}");
                     unimplemented!()
                 }
             };
@@ -193,7 +193,7 @@ impl PostEmbed {
                 )
             }
             provider => {
-                error!("Unknown embed provider ({})", provider);
+                error!("Unknown embed provider ({provider})");
                 error!("id: {}", self.id);
                 error!("content_id: {}", self.content_id);
                 unimplemented!()
@@ -215,7 +215,7 @@ impl PostTextEmbed {
                 };
                 src = src.split_at(end).0;
 
-                format!("[{}]({})", src, src)
+                format!("[{src}]({src})")
             }
             PostTextEmbed::HtmlCard { id: _, html } => {
                 let Some(start) = html.find("<iframe src=\"") else {
@@ -228,7 +228,7 @@ impl PostTextEmbed {
                 };
                 src = src.split_at(end).0;
 
-                format!("[{}]({})", src, src)
+                format!("[{src}]({src})")
             }
             PostTextEmbed::FanboxPost { id: _id, post_info } => {
                 format!(
@@ -249,7 +249,7 @@ impl PostTextEmbed {
                 url,
                 host: _,
             } => {
-                format!("[{}]({})", url, url)
+                format!("[{url}]({url})")
             }
         }
     }

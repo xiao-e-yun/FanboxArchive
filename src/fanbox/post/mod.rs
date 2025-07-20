@@ -67,12 +67,12 @@ pub struct Comment {
     pub user: User,
 }
 
-impl Into<post_archiver::Comment> for Comment {
-    fn into(self) -> post_archiver::Comment {
+impl From<Comment> for post_archiver::Comment {
+    fn from(val: Comment) -> Self {
         post_archiver::Comment {
-            user: self.user.name,
-            text: self.body,
-            replies: self.replies.into_iter().map(|c| c.into()).collect(),
+            user: val.user.name,
+            text: val.body,
+            replies: val.replies.into_iter().map(|c| c.into()).collect(),
         }
     }
 }
