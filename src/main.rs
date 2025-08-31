@@ -64,13 +64,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for (author, creator_id) in authors {
         let mut posts = get_post_urls(&config, &client, &creator_id).await?;
 
+        info!("{creator_id}");
         let total_post = posts.len();
         let mut posts_count_info = format!("{total_post} posts",);
         if !config.force() {
             posts = filter_unsynced_posts(&mut manager, posts)?;
             posts_count_info += &format!(" ({} unsynced)", posts.len());
         };
-        info!(" + {posts_count_info}",);
+        info!("+ {posts_count_info}",);
 
         let posts = get_posts(&config,&client, posts).await?;
         if !posts.is_empty() {
