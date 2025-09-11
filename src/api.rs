@@ -68,7 +68,10 @@ impl FanboxClient {
         }
 
         let mut file = File::create(&path)?;
-        self.inner.download(url, &mut file).await
+        self.inner.download(url, &mut file).await?;
+
+        debug!("Downloaded to {}", path.display());
+        Ok(())
     }
 
     pub async fn get_supporting_creators(&self) -> Result<APIListSupportingCreator> {
