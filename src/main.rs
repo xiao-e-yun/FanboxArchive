@@ -7,19 +7,23 @@ mod post;
 
 pub mod fanbox;
 
-use std::error::Error;
+use std::{error::Error, rc::Rc};
 
 use api::FanboxClient;
-use config::Config;
-use creator::{display_creators, get_creators, sync_creators};
+use config::Progress;
+use creator::get_creators;
+use dashmap::DashMap;
+use fanbox::PostListItem;
 use log::{info, warn};
-use post::{filter_unsynced_posts, get_post_urls, get_posts, sync_posts};
-use post_archiver::{manager::PostArchiverManager, utils::VERSION};
+use plyne::define_tasks;
+use post::get_posts;
+use post_archiver::{manager::PostArchiverManager, utils::VERSION, AuthorId};
 use post_archiver_utils::display_metadata;
+use tokio::sync::Mutex;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::parse();
+    let config = config::Config::parse();
 
     display_metadata(
         "Fanbox Archive",
@@ -46,42 +50,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     info!("Connecting to PostArchiver");
-    let mut manager = PostArchiverManager::open_or_create(config.output())?;
+    let manager = PostArchiverManager::open_or_create(config.output())?;
+    let manager = Rc::new(Mutex::new(manager));
 
     let client = FanboxClient::new(&config);
+    let authors_pb = config.progress("authors");
+    let posts_pb = config.progress("posts");
+    let files_pb = config.progress("files");
 
-    info!("Loading Creator List");
-    let creators = get_creators(&config, &client).await?;
-    display_creators(&creators);
-
-    info!("Syncing Creator List");
-    let authors = sync_creators(&mut manager, creators)?;
-
-    info!("Loading Creators Post");
-    let pb = config.progress("authors");
-    pb.set_length(authors.len() as u64);
-
-    for (author, creator_id) in authors {
-        let mut posts = get_post_urls(&config, &client, &creator_id).await?;
-
-        info!("{creator_id}");
-        let total_post = posts.len();
-        let mut posts_count_info = format!("{total_post} posts",);
-        if !config.force() {
-            posts = filter_unsynced_posts(&mut manager, posts)?;
-            posts_count_info += &format!(" ({} unsynced)", posts.len());
-        };
-        info!("+ {posts_count_info}",);
-
-        let posts = get_posts(&config,&client, posts).await?;
-        if !posts.is_empty() {
-            sync_posts(&mut manager, &client, &config, author, posts).await?;
-        }
-
-        info!("");
-        pb.inc(1);
-    }
+    FanboxSystem::new(
+        manager,
+        config,
+        client,
+        Default::default(),
+        authors_pb,
+        posts_pb,
+        files_pb,
+    )
+    .execute()
+    .await;
 
     info!("All done!");
     Ok(())
+}
+
+define_tasks! {
+    FanboxSystem
+    pipelines {
+        PostsPipeline: Vec<PostListItem>,
+        FilePipeline: u32,
+    }
+    vars {
+        Manager: Rc<Mutex<PostArchiverManager>>,
+        Config: config::Config,
+        Client: FanboxClient,
+        Authors: Rc<DashMap<String, AuthorId>>,
+        AuthorsProgress: Progress,
+        PostsProgress: Progress,
+        FilesProgress: Progress,
+    }
+    tasks {
+        get_creators,
+        get_posts,
+    }
 }

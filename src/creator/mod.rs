@@ -1,12 +1,24 @@
-use std::{collections::HashSet, error::Error};
+use std::collections::HashSet;
 
-use log::info;
-use post_archiver::{importer::{UnsyncAlias, UnsyncAuthor}, manager::PostArchiverManager, AuthorId};
-use rusqlite::Connection;
+use itertools::Itertools;
+use log::{error, info, warn};
+use post_archiver::importer::{UnsyncAlias, UnsyncAuthor};
+use post_archiver_utils::Result;
+use tokio::{join, task::JoinSet};
 
-use crate::{api::FanboxClient, config::Config, fanbox::Creator};
+use crate::{
+    fanbox::Creator, post::{filter_unsynced_post, POST_CHUNK_SIZE}, Authors, AuthorsProgress, Client, Config, Manager, PostsPipelineInput, PostsProgress
+};
 
-pub async fn get_creators(config: &Config, client: &FanboxClient) -> Result<Vec<Creator>, Box<dyn Error>> {
+pub async fn get_creators(
+    config: Config,
+    client: Client,
+    manager: Manager,
+    authors: Authors,
+    posts_pipeline: PostsPipelineInput,
+    authors_pb: AuthorsProgress,
+    posts_pb: PostsProgress,
+) {
     let accepts = config.accepts();
     info!("Accepts:");
     for accept in accepts.list() {
@@ -16,17 +28,35 @@ pub async fn get_creators(config: &Config, client: &FanboxClient) -> Result<Vec<
 
     let mut creators: HashSet<Creator> = HashSet::new();
     info!("Checking creators");
-    if accepts.accept_following() {
-        let following = client.get_following_creators().await?;
-        info!(" + Following: {} found", following.len());
-        creators.extend(following.into_iter().map(|f| f.into()));
-    }
 
-    if accepts.accept_supporting() {
-        let supporting = client.get_supporting_creators().await?;
-        info!(" + Supporting: {} found", supporting.len());
-        creators.extend(supporting.into_iter().map(|f| f.into()));
-    }
+    let (following, supporting) = join!(
+        async {
+            if !accepts.accept_following() {
+                return vec![];
+            }
+            let list = client
+                .get_following_creators()
+                .await
+                .inspect_err(|e| warn!("Failed to get following creators: {e}"))
+                .unwrap_or_default();
+            info!(" + Following: {} found", list.len());
+            list
+        },
+        async {
+            if !accepts.accept_supporting() {
+                return vec![];
+            }
+            let list = client
+                .get_supporting_creators()
+                .await
+                .inspect_err(|e| warn!("Failed to get supporting creators: {e}"))
+                .unwrap_or_default();
+            info!(" + Supporting: {} found", list.len());
+            list
+        }
+    );
+    creators.extend(following.into_iter().map(|c| c.into()));
+    creators.extend(supporting.into_iter().map(|c| c.into()));
     info!("");
 
     let total = creators.len();
@@ -37,12 +67,47 @@ pub async fn get_creators(config: &Config, client: &FanboxClient) -> Result<Vec<
     info!("Excluded: {offset} creators");
     info!("Included: {filtered} creators");
     info!("");
-    Ok(creators.into_iter().collect())
+
+    display_creators(&creators);
+    if let Err(e) = sync_creators(&manager, creators, &authors).await {
+        error!("Failed to sync creators: {e}");
+        return;
+    };
+
+    authors_pb.set_length(filtered as u64);
+    let mut set = authors
+        .iter()
+        .map(|entry| (client.clone(), entry.key().clone()))
+        .map(|(client, creator)| async move { client.get_posts(&creator).await })
+        .collect::<JoinSet<_>>();
+
+    while let Some(post) = set.join_next().await {
+        authors_pb.inc(1);
+        match post.unwrap() {
+            Ok(items) => {
+                posts_pb.inc_length(items.len() as u64);
+                let manager = manager.lock().await;
+                let chunks = items
+                    .into_iter()
+                    .filter(|item| config.filter_post(item))
+                    .filter(|item| filter_unsynced_post(&manager, item))
+                    .chunks(POST_CHUNK_SIZE);
+                for chunk in &chunks {
+                    posts_pipeline.send(chunk.collect()).unwrap();
+                }
+            }
+            Err(e) => {
+                error!("Failed to get posts: {e}");
+            }
+        }
+    }
+
+    authors_pb.finish();
 }
 
-pub fn display_creators(creators: &[Creator]) {
+pub fn display_creators(creators: &HashSet<Creator>) {
     if log::log_enabled!(log::Level::Info) {
-        let mut creators = creators.to_vec();
+        let mut creators = creators.iter().collect::<Vec<_>>();
         creators.sort_by(|a, b| a.creator_id.cmp(&b.creator_id));
 
         let (mut id_width, mut fee_width) = (11_usize, 5_usize);
@@ -70,27 +135,36 @@ pub fn display_creators(creators: &[Creator]) {
     }
 }
 
-pub fn sync_creators(
-    manager: &mut PostArchiverManager<Connection>,
-    creators: Vec<Creator>,
-) -> Result<Vec<(AuthorId, String)>, Box<dyn Error>> {
+pub async fn sync_creators(
+    manager: &Manager,
+    creators: HashSet<Creator>,
+    authors: &Authors,
+) -> Result<()> {
+    let mut manager = manager.lock().await;
     let manager = manager.transaction()?;
 
     let fanbox_platform = manager.import_platform("fanbox".to_string())?;
     let pixiv_platform = manager.import_platform("pixiv".to_string())?;
 
-    let authors = creators.into_iter()
-        .map(|creator| {
-            let author = UnsyncAuthor::new(creator.name.to_string())
-                .aliases(vec![
-                    UnsyncAlias::new(fanbox_platform, creator.creator_id.clone()).link(format!("https://{}.fanbox.cc/", creator.creator_id)),
-                    UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).link(format!("https://www.pixiv.net/users/{}", creator.user.user_id)),
-                ])
-                .sync(&manager)?;
+    for creator in creators {
+        let Ok(author) = UnsyncAuthor::new(creator.name.to_string())
+            .aliases(vec![
+                UnsyncAlias::new(fanbox_platform, creator.creator_id.clone())
+                    .link(format!("https://{}.fanbox.cc/", creator.creator_id)),
+                UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).link(format!(
+                    "https://www.pixiv.net/users/{}",
+                    creator.user.user_id
+                )),
+            ])
+            .sync(&manager)
+        else {
+            error!("Failed to sync author: {}", creator.creator_id);
+            continue;
+        };
 
-            Ok((author, creator.creator_id))
-        }).collect::<Result<Vec<_>,rusqlite::Error>>()?;
+        authors.insert(creator.creator_id, author);
+    }
 
-    manager.commit()?;
-    Ok(authors)
+    manager.commit().unwrap();
+    Ok(())
 }

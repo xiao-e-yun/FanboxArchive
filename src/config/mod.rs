@@ -36,7 +36,7 @@ pub struct Config {
     blacklist: Vec<String>,
     /// Limit fetch number of posts per minute
     #[arg(long, default_value = "120")]
-    limit: usize,
+    limit: u32,
     /// Skip free post
     #[arg(long, name = "skip-free")]
     skip_free: bool,
@@ -132,7 +132,7 @@ impl Config {
     pub fn output(&self) -> &PathBuf {
         &self.output
     }
-    pub fn limit(&self) -> usize {
+    pub fn limit(&self) -> u32 {
         self.limit
     }
 

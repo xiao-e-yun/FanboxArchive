@@ -4,110 +4,117 @@ pub mod file;
 use std::collections::HashMap;
 
 use crate::{
-    api::FanboxClient,
-    config::Config,
-    fanbox::{Comment, Post, PostListItem},
+    api::FanboxClient, fanbox::{Comment, Post, PostListItem}, Authors, Client, Config, FilesProgress, Manager, PostsPipelineOutput, PostsProgress
 };
 use file::{download_files, FanboxFileMeta};
-use futures::future::join;
-use log::info;
+use futures::future::join_all;
+use log::{debug, error};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
     AuthorId, PlatformId,
 };
-use rusqlite::Connection;
+use post_archiver_utils::Result;
 use serde_json::json;
-use tokio::task::JoinSet;
+use tokio::join;
 
-pub async fn get_post_urls(
-    config: &Config,
-    client: &FanboxClient,
-    creator_id: &str,
-) -> Result<Vec<PostListItem>, Box<dyn std::error::Error>> {
-    let mut items = client.get_posts(creator_id).await?;
-    items.retain(|item| config.filter_post(item));
-    Ok(items)
-}
+pub const POST_CHUNK_SIZE: usize = 12;
 
-pub fn filter_unsynced_posts(
-    manager: &mut PostArchiverManager<impl PostArchiverConnection>,
-    mut posts: Vec<PostListItem>,
-) -> Result<Vec<PostListItem>, rusqlite::Error> {
-    posts.retain(|post| {
-        let source = get_source_link(&post.creator_id, &post.id);
-        let post_updated = manager
-            .find_post_with_updated(&source, &post.updated_datetime)
-            .expect("Failed to check post");
-        post_updated.is_none()
-    });
-    Ok(posts)
+pub fn filter_unsynced_post(
+    manager: &PostArchiverManager<impl PostArchiverConnection>,
+    post: &PostListItem,
+) -> bool {
+    let source = get_source_link(&post.creator_id, &post.id);
+    manager
+        .find_post_with_updated(&source, &post.updated_datetime)
+        .expect("Failed to check post")
+        .is_none()
 }
 
 pub async fn get_posts(
-    config: &Config,
-    client: &FanboxClient,
-    posts: Vec<PostListItem>,
-) -> Result<Vec<(Post, Vec<Comment>)>, Box<dyn std::error::Error>> {
-    let pb = config.progress("posts");
-    pb.set_length(posts.len() as u64);
+    manager: Manager,
+    config: Config,
+    client: Client,
+    authors: Authors,
+    mut posts_pipeline: PostsPipelineOutput,
+    post_pb: PostsProgress,
+    file_pb: FilesProgress,
+) {
+    let download_client = FanboxClient::new(&config);
+    while let Some(posts) = posts_pipeline.recv().await {
+        let client = &client;
+        let post_pb = &post_pb;
 
-    let mut tasks = JoinSet::new();
-
-    for post in posts {
-        let client = client.clone();
-        tasks.spawn(async move {
-            join(
+        let posts = join_all(posts.into_iter().map(|post| async move {
+            let result = join![
                 client.get_post(&post.id),
-                client.get_post_comments(&post.id, post.comment_count),
-            )
-            .await
-        });
+                client.get_post_comments(&post.id, post.comment_count)
+            ];
+            debug!("Fetched post {}", post.id);
+            post_pb.inc(1);
+            match result {
+                (Ok(post), comments) => {
+                    let comments = comments.unwrap_or_else(|e| {
+                        error!("Failed to fetch comments for post {}: {}", post.id, e);
+                        vec![]
+                    });
+                    Some((post, comments))
+                }
+                (Err(e), _) => {
+                    error!("Failed to fetch post {}: {}", post.id, e);
+                    None
+                }
+            }
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        if posts.is_empty() {
+            continue;
+        }
+
+        let creator = posts.first().map(|(p, _)| p.creator_id.as_str()).unwrap();
+        let author = *authors.get(creator).expect("Author not found");
+
+        sync_posts(&manager, &download_client, &file_pb, author, posts).await.unwrap();
     }
 
-    let mut posts = Vec::new();
-    while let Some(Ok((post, comments))) = tasks.join_next().await {
-        let (post, comments) = (post?, comments?);
-        posts.push((post, comments));
-        pb.inc(1);
-    }
-
-    Ok(posts)
+    post_pb.finish();
+    file_pb.finish();
 }
 
 pub async fn sync_posts(
-    manager: &mut PostArchiverManager<Connection>,
+    manager: &Manager,
     client: &FanboxClient,
-    config: &Config,
+    file_pb: &FilesProgress,
     author: AuthorId,
     posts: Vec<(Post, Vec<Comment>)>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
+    let mut manager = manager.lock().await;
     let manager = manager.transaction()?;
-    let total_posts = posts.len();
 
     let platform = manager.import_platform("fanbox".to_string())?;
 
     let posts = posts
         .into_iter()
         .map(|(post, comments)| conversion_post(platform, author, post, comments))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>>>()?;
 
     let (_posts, post_files) = manager.import_posts(posts, true)?;
 
-    let pb = config.progress("files");
-    pb.set_length(post_files.len() as u64);
-    download_files(&pb, client, post_files).await?;
+    file_pb.inc_length(post_files.len() as u64);
+    download_files(file_pb, client, post_files).await?;
 
     manager.commit()?;
-
-    info!("{total_posts} total");
 
     fn conversion_post(
         platform: PlatformId,
         author: AuthorId,
         post: Post,
         comments: Vec<Comment>,
-    ) -> Result<UnsyncPost<String>, Box<dyn std::error::Error>> {
+    ) -> Result<UnsyncPost<String>> {
         let source = get_source_link(&post.creator_id, &post.id);
 
         let mut tags = vec![];

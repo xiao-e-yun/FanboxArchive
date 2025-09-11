@@ -29,7 +29,7 @@ pub struct FanboxClient {
 
 impl FanboxClient {
     pub fn new(config: &Config) -> Self {
-        let inner = ArchiveClient::new(
+        let inner = ArchiveClient::builder(
             Client::builder()
                 .user_agent(config.user_agent())
                 .default_headers(HeaderMap::from_iter([
@@ -42,14 +42,14 @@ impl FanboxClient {
                 .build()
                 .unwrap(),
             config.limit(),
-        );
+        )
+        .build();
         let overwrite = config.overwrite();
 
         Self { inner, overwrite }
     }
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        debug!("Fetching {url}");
         let response = self.inner.fetch::<FanboxAPIResponse<T>>(url).await?;
 
         match response.body {
@@ -67,7 +67,6 @@ impl FanboxClient {
             return Ok(());
         }
 
-        debug!("Downloading {} to {}", url, path.display());
         let mut file = File::create(&path)?;
         self.inner.download(url, &mut file).await
     }

@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use log::error;
 use mime_guess::MimeGuess;
 use post_archiver::importer::file_meta::UnsyncFileMeta;
+use post_archiver_utils::Result;
 use serde_json::json;
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -14,11 +15,10 @@ pub async fn download_files(
     pb: &Progress, 
     client: &FanboxClient,
     files: Vec<(PathBuf, String)>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     let mut tasks = JoinSet::new();
 
     let mut last_folder = PathBuf::new();
-    let semphore = Arc::new(Semaphore::new(3));
     for (path, url) in files {
         // Create folder if it doesn't exist
         let folder = path.parent().unwrap();
@@ -27,11 +27,9 @@ pub async fn download_files(
             tokio::fs::create_dir_all(folder).await?;
         }
 
-        let semphore = semphore.clone();
         let client = client.clone();
         let pb = pb.clone();
         tasks.spawn(async move {
-            let _permit = semphore.acquire().await.unwrap();
             if let Err(e) = client.download(&url, path.clone()).await {
                 error!("Failed to download {} to {}: {}", url, path.display(), e);
             };
