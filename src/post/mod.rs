@@ -4,21 +4,20 @@ pub mod file;
 use std::collections::HashMap;
 
 use crate::{
-    api::FanboxClient, fanbox::{Comment, Post, PostListItem}, Authors, Client, Config, FilesProgress, Manager, PostsPipelineOutput, PostsProgress
+    creator::sync_creator,
+    fanbox::{Comment, Post, PostListItem},
+    Client, FilesPipelineInput, Manager, PostsPipelineOutput, Progress, SyncPipelineInput,
+    SyncPipelineOutput,
 };
-use file::{download_files, FanboxFileMeta};
-use futures::future::join_all;
-use log::{debug, error};
+use file::FanboxFileMeta;
+use log::{debug, error, trace};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
     AuthorId, PlatformId,
 };
-use post_archiver_utils::Result;
 use serde_json::json;
-use tokio::join;
-
-pub const POST_CHUNK_SIZE: usize = 12;
+use tokio::{join, sync::oneshot, task::JoinSet};
 
 pub fn filter_unsynced_post(
     manager: &PostArchiverManager<impl PostArchiverConnection>,
@@ -32,89 +31,136 @@ pub fn filter_unsynced_post(
 }
 
 pub async fn get_posts(
-    manager: Manager,
-    config: Config,
-    client: Client,
-    authors: Authors,
     mut posts_pipeline: PostsPipelineOutput,
-    post_pb: PostsProgress,
-    file_pb: FilesProgress,
+    files_pipeline: FilesPipelineInput,
+    sync_piepline: SyncPipelineInput,
+    client: Client,
+    pb: Progress,
 ) {
-    let download_client = FanboxClient::new(&config);
+    let mut join_set = JoinSet::new();
+
     while let Some(posts) = posts_pipeline.recv().await {
-        let client = &client;
-        let post_pb = &post_pb;
+        for post in posts {
+            let posts_pb = pb.posts.clone();
+            let files_pb = pb.files.clone();
+            let client = client.clone();
+            let files_pipeline = files_pipeline.clone();
+            let sync_piepline = sync_piepline.clone();
+            join_set.spawn(async move {
+                let result = join![
+                    client.get_post(&post.id),
+                    client.get_post_comments(&post.id, post.comment_count)
+                ];
+                debug!("Fetched post {}", post.id);
 
-        let posts = join_all(posts.into_iter().map(|post| async move {
-            let result = join![
-                client.get_post(&post.id),
-                client.get_post_comments(&post.id, post.comment_count)
-            ];
-            debug!("Fetched post {}", post.id);
-            post_pb.inc(1);
-            match result {
-                (Ok(post), comments) => {
-                    let comments = comments.unwrap_or_else(|e| {
-                        error!("Failed to fetch comments for post {}: {}", post.id, e);
-                        vec![]
-                    });
-                    Some((post, comments))
-                }
-                (Err(e), _) => {
-                    error!("Failed to fetch post {}: {}", post.id, e);
-                    None
-                }
-            }
-        }))
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+                match result {
+                    (Ok(post), comments) => {
+                        let comments = comments.unwrap_or_else(|e| {
+                            error!("Failed to fetch comments for post {}: {}", post.id, e);
+                            vec![]
+                        });
 
-        if posts.is_empty() {
-            continue;
+                        let (tx, rx) = oneshot::channel();
+                        let files = post
+                            .body
+                            .files()
+                            .into_iter()
+                            .map(|f| f.data)
+                            .chain(post.cover_image_url.clone())
+                            .collect::<Vec<_>>();
+
+                        files_pb.inc_length(files.len() as u64);
+                        files_pipeline.send((files, tx)).unwrap();
+                        sync_piepline.send((post, comments, rx)).unwrap();
+                    }
+                    (Err(e), _) => error!("Failed to fetch post {}: {}", post.id, e),
+                };
+
+                posts_pb.inc(1);
+            });
         }
-
-        let creator = posts.first().map(|(p, _)| p.creator_id.as_str()).unwrap();
-        let author = *authors.get(creator).expect("Author not found");
-
-        sync_posts(&manager, &download_client, &file_pb, author, posts).await.unwrap();
     }
 
-    post_pb.finish();
-    file_pb.finish();
+    join_set.join_all().await;
+    pb.posts.finish();
 }
 
-pub async fn sync_posts(
-    manager: &Manager,
-    client: &FanboxClient,
-    file_pb: &FilesProgress,
-    author: AuthorId,
-    posts: Vec<(Post, Vec<Comment>)>,
-) -> Result<()> {
-    let mut manager = manager.lock().await;
-    let manager = manager.transaction()?;
+pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager) {
+    let mut authors = HashMap::new();
+    while let Some((post, comments, rx)) = sync_piepline.recv().await {
+        let mut manager = manager.lock().await;
 
-    let platform = manager.import_platform("fanbox".to_string())?;
+        let fanbox_platform = manager.import_platform("fanbox".to_string()).unwrap();
+        let pixiv_platform = manager.import_platform("pixiv".to_string()).unwrap();
 
-    let posts = posts
-        .into_iter()
-        .map(|(post, comments)| conversion_post(platform, author, post, comments))
-        .collect::<Result<Vec<_>>>()?;
+        let tx = manager.transaction().unwrap();
 
-    let (_posts, post_files) = manager.import_posts(posts, true)?;
+        let Ok(author) = sync_creator(&tx, &mut authors, [fanbox_platform, pixiv_platform], &post)
+        else {
+            error!("Failed to sync creator for post: {}", post.id);
+            continue;
+        };
 
-    file_pb.inc_length(post_files.len() as u64);
-    download_files(file_pb, client, post_files).await?;
+        let post = conversion_post(fanbox_platform, author, post, comments);
+        let source = post.source.clone();
 
-    manager.commit()?;
+        let Ok((_, _, _, files)) = tx.import_post(post, true) else {
+            error!("Failed to import post: {source}");
+            continue;
+        };
+
+        let Ok(mut file_map) = rx.await else {
+            error!("Failed to receive file map for post: {source}");
+            continue;
+        };
+
+        
+        let mut failed = false;
+        let mut created = false;
+        for (path, url) in files {
+            if !created {
+                let path = path.parent().unwrap();
+                if let Err(e) = std::fs::create_dir_all(path) {
+                    error!( "Failed to create directory {}: {}", path.display(), e);
+                    failed = true;
+                    break;
+                }
+                created = true;
+            }
+            match file_map.remove(&url) {
+                Some(temp) => {
+                    match std::fs::copy(&temp, &path) {
+                        Ok(_) => trace!("File saved: {}", path.display()),
+                        Err(e) => {
+                            error!("Failed to save file {}: {}", path.display(), e);
+                            failed = true;
+                            break;
+                        }
+                    };
+                    std::fs::remove_file(&temp).ok();
+                },
+                None => {
+                    error!("File URL not found in map: {url}");
+                    failed = true;
+                    break;
+                }
+            }
+        }
+
+        if failed {
+            error!("Aborting post import due to file errors: {source}");
+        } else {
+            debug!("Post imported: {source}");
+            tx.commit().unwrap();
+        }
+    }
 
     fn conversion_post(
         platform: PlatformId,
         author: AuthorId,
         post: Post,
         comments: Vec<Comment>,
-    ) -> Result<UnsyncPost<String>> {
+    ) -> UnsyncPost<String> {
         let source = get_source_link(&post.creator_id, &post.id);
 
         let mut tags = vec![];
@@ -149,26 +195,22 @@ pub async fn sync_posts(
                 ("width".to_string(), json!(1200)),
                 ("height".to_string(), json!(630)),
             ]);
-            (meta, url)
+            meta
         });
 
         let content = post.body.content();
 
         let comments = comments.into_iter().map(|c| c.into()).collect();
 
-        let post = UnsyncPost::new(platform, source, post.title, content)
-            .thumb(thumb.map(|v| v.0))
+        UnsyncPost::new(platform, source, post.title, content)
+            .thumb(thumb)
             .comments(comments)
             .collections(collections)
             .authors(vec![author])
             .published(post.published_datetime)
             .updated(post.updated_datetime)
-            .tags(tags);
-
-        Ok(post)
+            .tags(tags)
     }
-
-    Ok(())
 }
 
 pub fn get_source_link(creator_id: &str, post_id: &str) -> String {

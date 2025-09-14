@@ -1,23 +1,27 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use itertools::Itertools;
 use log::{error, info, warn};
-use post_archiver::importer::{UnsyncAlias, UnsyncAuthor};
+use post_archiver::{
+    importer::{UnsyncAlias, UnsyncAuthor},
+    manager::PostArchiverManager,
+    AuthorId, PlatformId,
+};
 use post_archiver_utils::Result;
-use tokio::{join, task::JoinSet};
+use rusqlite::Transaction;
+use tokio::join;
 
 use crate::{
-    fanbox::Creator, post::{filter_unsynced_post, POST_CHUNK_SIZE}, Authors, AuthorsProgress, Client, Config, Manager, PostsPipelineInput, PostsProgress
+    fanbox::{Creator, Post, User},
+    post::filter_unsynced_post,
+    Client, Config, CreatorPipelineInput, CreatorPipelineOutput, Manager, PostsPipelineInput,
+    Progress,
 };
 
 pub async fn get_creators(
     config: Config,
     client: Client,
-    manager: Manager,
-    authors: Authors,
-    posts_pipeline: PostsPipelineInput,
-    authors_pb: AuthorsProgress,
-    posts_pb: PostsProgress,
+    creator_pipeline: CreatorPipelineInput,
+    pb: Progress,
 ) {
     let accepts = config.accepts();
     info!("Accepts:");
@@ -69,40 +73,41 @@ pub async fn get_creators(
     info!("");
 
     display_creators(&creators);
-    if let Err(e) = sync_creators(&manager, creators, &authors).await {
-        error!("Failed to sync creators: {e}");
-        return;
-    };
+    pb.authors.inc_length(total as u64);
 
-    authors_pb.set_length(filtered as u64);
-    let mut set = authors
-        .iter()
-        .map(|entry| (client.clone(), entry.key().clone()))
-        .map(|(client, creator)| async move { client.get_posts(&creator).await })
-        .collect::<JoinSet<_>>();
+    for creator in creators {
+        creator_pipeline.send(creator).unwrap();
+    }
+}
 
-    while let Some(post) = set.join_next().await {
-        authors_pb.inc(1);
-        match post.unwrap() {
-            Ok(items) => {
-                posts_pb.inc_length(items.len() as u64);
-                let manager = manager.lock().await;
-                let chunks = items
-                    .into_iter()
-                    .filter(|item| config.filter_post(item))
-                    .filter(|item| filter_unsynced_post(&manager, item))
-                    .chunks(POST_CHUNK_SIZE);
-                for chunk in &chunks {
-                    posts_pipeline.send(chunk.collect()).unwrap();
-                }
-            }
-            Err(e) => {
-                error!("Failed to get posts: {e}");
-            }
-        }
+pub async fn get_creator_posts(
+    mut creator_pipeline: CreatorPipelineOutput,
+    posts_pipeline: PostsPipelineInput,
+    manager: Manager,
+    config: Config,
+    client: Client,
+    pb: Progress,
+) {
+    while let Some(creator) = creator_pipeline.recv().await {
+        let Ok(posts) = client.get_posts(&creator.creator_id).await else {
+            error!("Failed to get posts for creator: {}", creator.creator_id);
+            return;
+        };
+
+        let manager = manager.lock().await;
+        let posts = posts
+            .into_iter()
+            .filter(|post| config.filter_post(post))
+            .filter(|post| filter_unsynced_post(&manager, post))
+            .collect::<Vec<_>>();
+
+        info!("Found {} posts ({})", posts.len(), creator.creator_id);
+        pb.posts.inc_length(posts.len() as u64);
+        posts_pipeline.send(posts).unwrap();
+        pb.authors.inc(1);
     }
 
-    authors_pb.finish();
+    pb.authors.finish();
 }
 
 pub fn display_creators(creators: &HashSet<Creator>) {
@@ -127,7 +132,7 @@ pub fn display_creators(creators: &HashSet<Creator>) {
             );
         }
         info!(
-            "+-{}-+-{}--+------------ - -",
+            "+-{}-+-{}--+-------------- - -",
             "-".to_string().repeat(id_width),
             "-".to_string().repeat(fee_width)
         );
@@ -135,36 +140,37 @@ pub fn display_creators(creators: &HashSet<Creator>) {
     }
 }
 
-pub async fn sync_creators(
-    manager: &Manager,
-    creators: HashSet<Creator>,
-    authors: &Authors,
-) -> Result<()> {
-    let mut manager = manager.lock().await;
-    let manager = manager.transaction()?;
-
-    let fanbox_platform = manager.import_platform("fanbox".to_string())?;
-    let pixiv_platform = manager.import_platform("pixiv".to_string())?;
-
-    for creator in creators {
-        let Ok(author) = UnsyncAuthor::new(creator.name.to_string())
-            .aliases(vec![
-                UnsyncAlias::new(fanbox_platform, creator.creator_id.clone())
-                    .link(format!("https://{}.fanbox.cc/", creator.creator_id)),
-                UnsyncAlias::new(pixiv_platform, creator.user.user_id.clone()).link(format!(
-                    "https://www.pixiv.net/users/{}",
-                    creator.user.user_id
-                )),
-            ])
-            .sync(&manager)
-        else {
-            error!("Failed to sync author: {}", creator.creator_id);
-            continue;
-        };
-
-        authors.insert(creator.creator_id, author);
+pub fn sync_creator(
+    manager: &PostArchiverManager<Transaction<'_>>,
+    authors: &mut HashMap<String, AuthorId>,
+    platforms: [PlatformId; 2],
+    post: &Post,
+) -> Result<AuthorId> {
+    let creator_id = post.creator_id.clone();
+    if let Some(author) = authors.get(&creator_id) {
+        return Ok(*author);
     }
 
-    manager.commit().unwrap();
-    Ok(())
+    let [fanbox_platform, pixiv_platform] = platforms;
+    let User { name, user_id, .. } = &post.user;
+
+    match UnsyncAuthor::new(name.to_string())
+        .aliases(vec![
+            UnsyncAlias::new(fanbox_platform, creator_id.clone())
+                .link(format!("https://{creator_id}.fanbox.cc/")),
+            UnsyncAlias::new(pixiv_platform, user_id.clone())
+                .link(format!("https://www.pixiv.net/users/{user_id}")),
+        ])
+        .sync(manager)
+    {
+        Ok(author) => {
+            info!("Synced author: {creator_id} ({name})");
+            authors.insert(creator_id, author);
+            Ok(author)
+        }
+        Err(e) => {
+            error!("Failed to sync author: {creator_id} ({name}): {e}");
+            Result::Err(e.into())
+        }
+    }
 }

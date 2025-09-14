@@ -7,18 +7,18 @@ mod post;
 
 pub mod fanbox;
 
-use std::{error::Error, rc::Rc};
+use std::{collections::HashMap, error::Error, rc::Rc};
 
 use api::FanboxClient;
-use config::Progress;
-use creator::get_creators;
-use dashmap::DashMap;
-use fanbox::PostListItem;
+use config::ProgressSet;
+use creator::{get_creator_posts, get_creators};
+use fanbox::{Creator, PostListItem};
 use log::{info, warn};
 use plyne::define_tasks;
-use post::get_posts;
-use post_archiver::{manager::PostArchiverManager, utils::VERSION, AuthorId};
+use post::{file::download_files, get_posts, sync_posts};
+use post_archiver::{manager::PostArchiverManager, utils::VERSION};
 use post_archiver_utils::display_metadata;
+use tempfile::{TempPath};
 use tokio::sync::Mutex;
 
 #[tokio::main(flavor = "current_thread")]
@@ -33,7 +33,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 format!("v{}", env!("CARGO_PKG_VERSION")).as_str(),
             ),
             ("PostArchiver Version", VERSION),
-            ("Overwrite", config.overwrite().to_string().as_str()),
             ("Force", config.force().to_string().as_str()),
             ("Limit", config.limit().to_string().as_str()),
             ("Skip Free", config.skip_free().to_string().as_str()),
@@ -54,21 +53,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let manager = Rc::new(Mutex::new(manager));
 
     let client = FanboxClient::new(&config);
-    let authors_pb = config.progress("authors");
-    let posts_pb = config.progress("posts");
-    let files_pb = config.progress("files");
+    let progress = ProgressSet::new(&config);
 
-    FanboxSystem::new(
-        manager,
-        config,
-        client,
-        Default::default(),
-        authors_pb,
-        posts_pb,
-        files_pb,
-    )
-    .execute()
-    .await;
+    FanboxSystem::new(manager, config, client, progress)
+        .execute()
+        .await;
 
     info!("All done!");
     Ok(())
@@ -77,20 +66,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 define_tasks! {
     FanboxSystem
     pipelines {
+        CreatorPipeline: Creator,
         PostsPipeline: Vec<PostListItem>,
-        FilePipeline: u32,
+        FilesPipeline: (Vec<String>, tokio::sync::oneshot::Sender<HashMap<String, TempPath>>),
+        SyncPipeline: (fanbox::Post, Vec<fanbox::Comment>, tokio::sync::oneshot::Receiver<HashMap<String, TempPath>>),
     }
     vars {
         Manager: Rc<Mutex<PostArchiverManager>>,
         Config: config::Config,
         Client: FanboxClient,
-        Authors: Rc<DashMap<String, AuthorId>>,
-        AuthorsProgress: Progress,
-        PostsProgress: Progress,
-        FilesProgress: Progress,
+        Progress: config::ProgressSet,
     }
     tasks {
         get_creators,
+        get_creator_posts,
         get_posts,
+        download_files,
+        sync_posts
     }
 }

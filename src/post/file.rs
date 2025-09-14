@@ -1,45 +1,46 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::collections::HashMap;
 
+use futures::future::try_join_all;
 use log::error;
 use mime_guess::MimeGuess;
 use post_archiver::importer::file_meta::UnsyncFileMeta;
-use post_archiver_utils::Result;
 use serde_json::json;
-use tokio::{sync::Semaphore, task::JoinSet};
+use tokio::task::JoinSet;
 
 use crate::{
-    api::FanboxClient, config::{Progress}, fanbox::{PostBody, PostFile, PostImage}
+    api::FanboxClient,
+    fanbox::{PostBody, PostFile, PostImage},
+    Config, FilesPipelineOutput, Progress,
 };
 
-pub async fn download_files(
-    pb: &Progress, 
-    client: &FanboxClient,
-    files: Vec<(PathBuf, String)>,
-) -> Result<()> {
+pub async fn download_files(mut files_pipeline: FilesPipelineOutput, config: Config, pb: Progress) {
     let mut tasks = JoinSet::new();
+    let client = FanboxClient::new(&config);
 
-    let mut last_folder = PathBuf::new();
-    for (path, url) in files {
-        // Create folder if it doesn't exist
-        let folder = path.parent().unwrap();
-        if last_folder != folder {
-            last_folder = folder.to_path_buf();
-            tokio::fs::create_dir_all(folder).await?;
+    while let Some((urls, tx)) = files_pipeline.recv().await {
+        if urls.is_empty() {
+            tx.send(Default::default()).unwrap();
+            continue;
         }
 
+        let files_pb = pb.files.clone();
         let client = client.clone();
-        let pb = pb.clone();
         tasks.spawn(async move {
-            if let Err(e) = client.download(&url, path.clone()).await {
-                error!("Failed to download {} to {}: {}", url, path.display(), e);
-            };
-            pb.inc(1);
+            match try_join_all(urls.into_iter().map(|url| async {
+                let download_path = client.download(&url);
+                let result = download_path.await.map(|path| (url, path));
+                files_pb.inc(1);
+                result.inspect_err(|e| error!("Failed to download file: {e}"))
+            }))
+            .await
+            {
+                Ok(urls) => tx.send(urls.into_iter().collect()).unwrap(),
+                Err(e) => error!("Failed to receive file URLs: {e}"),
+            }
         });
     }
 
     tasks.join_all().await;
-
-    Ok(())
 }
 
 pub trait FanboxFileMeta

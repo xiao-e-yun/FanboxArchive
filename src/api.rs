@@ -1,4 +1,3 @@
-use std::{fs::File, path::PathBuf};
 
 use log::debug;
 use post_archiver_utils::{ArchiveClient, Error, Result};
@@ -7,6 +6,7 @@ use reqwest::{
     Client,
 };
 use serde::{de::DeserializeOwned, Deserialize};
+use tempfile::TempPath;
 use tokio::task::JoinSet;
 
 use crate::{
@@ -24,7 +24,6 @@ pub type APIListCreatorPaginate = Vec<String>;
 #[derive(Debug, Clone)]
 pub struct FanboxClient {
     inner: ArchiveClient,
-    overwrite: bool,
 }
 
 impl FanboxClient {
@@ -43,10 +42,10 @@ impl FanboxClient {
                 .unwrap(),
             config.limit(),
         )
+        .pre_sec_limit(2)
         .build();
-        let overwrite = config.overwrite();
 
-        Self { inner, overwrite }
+        Self { inner }
     }
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -61,17 +60,10 @@ impl FanboxClient {
         }
     }
 
-    pub async fn download(&self, url: &str, path: PathBuf) -> Result<()> {
-        if !self.overwrite && path.exists() {
-            debug!("Download was skip ({})", path.display());
-            return Ok(());
-        }
-
-        let mut file = File::create(&path)?;
-        self.inner.download(url, &mut file).await?;
-
-        debug!("Downloaded to {}", path.display());
-        Ok(())
+    pub async fn download(&self, url: &str) -> Result<TempPath> {
+        let path = self.inner.download(url).await?;
+        debug!("Downloaded {url}");
+        Ok(path)
     }
 
     pub async fn get_supporting_creators(&self) -> Result<APIListSupportingCreator> {

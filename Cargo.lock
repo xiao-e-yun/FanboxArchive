@@ -430,6 +430,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1372,9 +1373,9 @@ dependencies = [
 
 [[package]]
 name = "post-archiver-utils"
-version = "0.0.5"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e66243af6f05d32a8f0ea622df203658436228c899d860a35d7f437258df857b"
+checksum = "ecee7ae7c3a85373bf97e1b5b7de716e038a7aed2be4a58627d8a08acd263385"
 dependencies = [
  "async-trait",
  "console",
@@ -1389,6 +1390,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.12",
  "tokio",
 ]
@@ -1959,15 +1961,15 @@ checksum = "3aa803da503e4a3d6bef14005f97495336b70eb767187a231c02ef899d0cfe0f"
 
 [[package]]
 name = "tempfile"
-version = "3.20.0"
+version = "3.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a64e3985349f2441a1a9ef0b853f869006c3855f2cda6862a94d26ebb9d6a1"
+checksum = "84fa4d11fadde498443cca10fd3ac23c951f0dc59e080e9f4b93d4df4e4eea53"
 dependencies = [
  "fastrand",
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

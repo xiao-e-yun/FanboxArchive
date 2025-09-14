@@ -25,9 +25,6 @@ pub struct Config {
     /// Force download
     #[arg(short, long)]
     force: bool,
-    /// Overwrite existing files
-    #[arg(short, long)]
-    overwrite: bool,
     /// Whitelist of creator IDs
     #[arg(short, long, num_args = 0..)]
     whitelist: Vec<String>,
@@ -111,9 +108,6 @@ impl Config {
     pub fn user_agent(&self) -> String {
         self.user_agent.clone()
     }
-    pub fn overwrite(&self) -> bool {
-        self.overwrite
-    }
     pub fn accepts(&self) -> SaveType {
         self.save
     }
@@ -193,5 +187,22 @@ impl Deref for Progress {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressSet {
+    pub authors: Progress,
+    pub posts: Progress,
+    pub files: Progress,
+}
+
+impl ProgressSet {
+    pub fn new(config: &Config) -> Self {
+        Self {
+            authors: config.progress("authors"),
+            posts: config.progress("posts"),
+            files: config.progress("files"),
+        }
     }
 }
