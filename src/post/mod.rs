@@ -10,7 +10,7 @@ use crate::{
     SyncPipelineOutput,
 };
 use file::FanboxFileMeta;
-use log::{debug, error, trace};
+use log::{debug, error, info, trace};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
@@ -150,7 +150,7 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
         if failed {
             error!("Aborting post import due to file errors: {source}");
         } else {
-            debug!("Post imported: {source}");
+            info!("Post imported: {source}");
             tx.commit().unwrap();
         }
     }

@@ -41,6 +41,7 @@ pub async fn download_files(mut files_pipeline: FilesPipelineOutput, config: Con
     }
 
     tasks.join_all().await;
+    pb.files.finish();
 }
 
 pub trait FanboxFileMeta
