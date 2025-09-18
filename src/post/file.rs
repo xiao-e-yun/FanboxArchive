@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use futures::future::try_join_all;
 use log::error;
 use mime_guess::MimeGuess;
 use post_archiver::importer::file_meta::UnsyncFileMeta;
 use serde_json::json;
-use tokio::task::JoinSet;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     api::FanboxClient,
@@ -17,6 +17,7 @@ pub async fn download_files(mut files_pipeline: FilesPipelineOutput, config: Con
     let mut tasks = JoinSet::new();
     let client = FanboxClient::new(&config);
 
+    let semaphore = Arc::new(Semaphore::new(3));
     while let Some((urls, tx)) = files_pipeline.recv().await {
         if urls.is_empty() {
             tx.send(Default::default()).unwrap();
@@ -25,7 +26,9 @@ pub async fn download_files(mut files_pipeline: FilesPipelineOutput, config: Con
 
         let files_pb = pb.files.clone();
         let client = client.clone();
+        let semaphore = semaphore.clone();
         tasks.spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
             match try_join_all(urls.into_iter().map(|url| async {
                 let download_path = client.download(&url);
                 let result = download_path.await.map(|path| (url, path));
