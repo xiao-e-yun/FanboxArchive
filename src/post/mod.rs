@@ -114,14 +114,13 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
             continue;
         };
 
-        
         let mut failed = false;
         let mut created = false;
         for (path, url) in files {
             if !created {
                 let path = path.parent().unwrap();
                 if let Err(e) = std::fs::create_dir_all(path) {
-                    error!( "Failed to create directory {}: {}", path.display(), e);
+                    error!("Failed to create directory {}: {}", path.display(), e);
                     failed = true;
                     break;
                 }
@@ -129,8 +128,18 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
             }
             match file_map.remove(&url) {
                 Some(temp) => {
-                    match std::fs::copy(&temp, &path) {
-                        Ok(_) => trace!("File saved: {}", path.display()),
+                    match std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(&path)
+                        .and_then(|mut dest| {
+                            std::fs::File::open(&temp)
+                                .and_then(|mut src| std::io::copy(&mut src, &mut dest))
+                        }) {
+                        Ok(_) => {
+                            trace!("File saved: {}", path.display());
+                        }
                         Err(e) => {
                             error!("Failed to save file {}: {}", path.display(), e);
                             failed = true;
@@ -138,7 +147,7 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
                         }
                     };
                     std::fs::remove_file(&temp).ok();
-                },
+                }
                 None => {
                     error!("File URL not found in map: {url}");
                     failed = true;
@@ -190,7 +199,7 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
             .collect();
 
         let thumb = post.cover_image_url.clone().map(|url| {
-            let mut meta = UnsyncFileMeta::from_url(url.clone());
+            let mut meta = UnsyncFileMeta::from_url(url);
             meta.extra = HashMap::from([
                 ("width".to_string(), json!(1200)),
                 ("height".to_string(), json!(630)),
