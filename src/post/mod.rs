@@ -1,7 +1,7 @@
 mod body;
 pub mod file;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
     creator::sync_creator,
@@ -10,14 +10,22 @@ use crate::{
     SyncPipelineOutput,
 };
 use file::FanboxFileMeta;
+use futures::try_join;
 use log::{debug, error, info, trace};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
     AuthorId, PlatformId,
 };
+use post_archiver_utils::Result;
 use serde_json::json;
-use tokio::{join, sync::oneshot, task::JoinSet};
+use tempfile::TempPath;
+use tokio::{
+    fs::{create_dir_all, File, OpenOptions},
+    io, join,
+    sync::oneshot,
+    task::JoinSet,
+};
 
 pub fn filter_unsynced_post(
     manager: &PostArchiverManager<impl PostArchiverConnection>,
@@ -87,7 +95,7 @@ pub async fn get_posts(
 
 pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager) {
     let mut authors = HashMap::new();
-    while let Some((post, comments, rx)) = sync_piepline.recv().await {
+    'post: while let Some((post, comments, rx)) = sync_piepline.recv().await {
         let mut manager = manager.lock().await;
 
         let fanbox_platform = manager.import_platform("fanbox".to_string()).unwrap();
@@ -114,54 +122,18 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
             continue;
         };
 
-        let mut failed = false;
-        let mut created = false;
+        let mut create_dir = true;
         for (path, url) in files {
-            if !created {
-                let path = path.parent().unwrap();
-                if let Err(e) = std::fs::create_dir_all(path) {
-                    error!("Failed to create directory {}: {}", path.display(), e);
-                    failed = true;
-                    break;
-                }
-                created = true;
-            }
-            match file_map.remove(&url) {
-                Some(temp) => {
-                    match std::fs::OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open(&path)
-                        .and_then(|mut dest| {
-                            std::fs::File::open(&temp)
-                                .and_then(|mut src| std::io::copy(&mut src, &mut dest))
-                        }) {
-                        Ok(_) => {
-                            trace!("File saved: {}", path.display());
-                        }
-                        Err(e) => {
-                            error!("Failed to save file {}: {}", path.display(), e);
-                            failed = true;
-                            break;
-                        }
-                    };
-                    std::fs::remove_file(&temp).ok();
-                }
-                None => {
-                    error!("File URL not found in map: {url}");
-                    failed = true;
-                    break;
-                }
-            }
+            if let Err(e) = save_file(&mut file_map, &path, &url, create_dir).await {
+                error!("Failed to save file {}: {}", path.display(), e);
+                error!("Aborting post import due to file errors: {source}");
+                continue 'post;
+            };
+            create_dir = false;
         }
 
-        if failed {
-            error!("Aborting post import due to file errors: {source}");
-        } else {
-            info!("Post imported: {source}");
-            tx.commit().unwrap();
-        }
+        info!("Post imported: {source}");
+        tx.commit().unwrap();
     }
 
     fn conversion_post(
@@ -219,6 +191,38 @@ pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager)
             .published(post.published_datetime)
             .updated(post.updated_datetime)
             .tags(tags)
+    }
+
+    async fn save_file(
+        file_map: &mut HashMap<String, TempPath>,
+        path: &PathBuf,
+        url: &str,
+        create_dir: bool,
+    ) -> Result<()> {
+        if create_dir {
+            let path = path.parent().unwrap();
+            create_dir_all(path).await?;
+        }
+
+        let temp = file_map.remove(url).ok_or(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("File not found in map: {url}"),
+        ))?;
+
+        let mut open_options = OpenOptions::new();
+        let (mut src, mut dst) = try_join!(
+            File::open(&temp),
+            open_options
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+        )?;
+
+        io::copy(&mut src, &mut dst).await?;
+        trace!("File saved: {url} -> {}", path.display());
+
+        Ok(())
     }
 }
 
