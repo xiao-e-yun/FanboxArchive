@@ -18,7 +18,7 @@ use plyne::define_tasks;
 use post::{file::download_files, get_posts, sync_posts};
 use post_archiver::{manager::PostArchiverManager, utils::VERSION};
 use post_archiver_utils::display_metadata;
-use tempfile::{TempPath};
+use tempfile::TempPath;
 use tokio::sync::Mutex;
 
 #[tokio::main(flavor = "current_thread")]

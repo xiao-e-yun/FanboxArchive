@@ -3,8 +3,7 @@ use std::fmt;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, ValueEnum, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, ValueEnum, PartialEq, Eq, Default)]
 pub enum SaveType {
     All,
     Following,
@@ -30,7 +29,6 @@ impl SaveType {
         }
     }
 }
-
 
 impl fmt::Display for SaveType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
