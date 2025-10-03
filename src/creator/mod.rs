@@ -111,7 +111,7 @@ pub async fn get_creator_posts(
         let posts = posts
             .into_iter()
             .filter(|post| config.filter_post(post))
-            .filter(|post| filter_unsynced_post(&manager, post))
+            .filter(|post| config.force() || filter_unsynced_post(&manager, post))
             .collect::<Vec<_>>();
 
         info!("Found {} posts ({})", posts.len(), creator.creator_id);
