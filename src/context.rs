@@ -54,8 +54,8 @@ pub struct CachedCreators {
 
 impl CachedCreators {
     pub fn last_updated(&self, fee: u32) -> Option<i64> {
-        let same_fee = fee >= self.fee;
-        same_fee.then_some(self.updated)
+        let fee_unchanged = fee <= self.fee;
+        fee_unchanged.then_some(self.updated)
     }
     pub fn update(&mut self, updated: i64, fee: u32) {
         if updated > self.updated {
