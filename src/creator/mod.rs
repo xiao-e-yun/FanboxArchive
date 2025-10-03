@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use futures::join;
 use log::{error, info, warn};
 use post_archiver::{
     importer::{UnsyncAlias, UnsyncAuthor},
@@ -8,13 +9,12 @@ use post_archiver::{
 };
 use post_archiver_utils::Result;
 use rusqlite::Transaction;
-use tokio::join;
 
 use crate::{
     fanbox::{Creator, Post, User},
     post::filter_unsynced_post,
-    Client, Config, CreatorPipelineInput, CreatorPipelineOutput, Manager, PostsPipelineInput,
-    Progress,
+    Client, Config, Context, CreatorPipelineInput, CreatorPipelineOutput, Manager,
+    PostsPipelineInput, Progress,
 };
 
 pub async fn get_creators(
@@ -83,16 +83,29 @@ pub async fn get_creators(
 pub async fn get_creator_posts(
     mut creator_pipeline: CreatorPipelineOutput,
     posts_pipeline: PostsPipelineInput,
+    context: Context,
     manager: Manager,
     config: Config,
     client: Client,
     pb: Progress,
 ) {
     while let Some(creator) = creator_pipeline.recv().await {
-        let Ok(posts) = client.get_posts(&creator.creator_id).await else {
+        let mut creator_record = context
+            .creators
+            .entry(creator.creator_id.clone())
+            .or_default();
+
+        let last_updated = creator_record
+            .last_updated(creator.fee)
+            .filter(|_| !config.force());
+
+        let Ok((posts, last_date)) = client.get_posts(&creator.creator_id, last_updated).await
+        else {
             error!("Failed to get posts for creator: {}", creator.creator_id);
             return;
         };
+
+        creator_record.update(last_date, creator.fee);
 
         let manager = manager.lock().await;
         let posts = posts

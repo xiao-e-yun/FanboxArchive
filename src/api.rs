@@ -1,8 +1,9 @@
+use chrono::NaiveDateTime;
 use log::debug;
 use post_archiver_utils::{ArchiveClient, Error, Result};
 use reqwest::{
     header::{self, HeaderMap},
-    Client,
+    Client, Url,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use tempfile::TempPath;
@@ -75,12 +76,38 @@ impl FanboxClient {
         self.fetch(url).await
     }
 
-    pub async fn get_posts(&self, creator: &str) -> Result<APIListCreatorPost> {
+    pub async fn get_posts(
+        &self,
+        creator: &str,
+        updated: Option<i64>,
+    ) -> Result<(APIListCreatorPost, i64)> {
         let url = format!("https://api.fanbox.cc/post.paginateCreator?creatorId={creator}",);
         let urls: APIListCreatorPaginate = self.fetch(&url).await?;
 
         let mut tasks = JoinSet::new();
+        let mut skip = false;
+        let mut last_date = None;
         for url in urls {
+            skip |= {
+                let url = Url::parse(&url).unwrap();
+                let date = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "firstPublishedDatetime")
+                    .map(|(_, v)| {
+                        NaiveDateTime::parse_from_str(&v, "%Y-%m-%d %H:%M:%S")
+                            .unwrap()
+                            .and_utc()
+                            .timestamp()
+                    });
+                last_date = last_date.or(date);
+                matches!((date, updated), (Some(date), Some(updated)) if date <= updated)
+            };
+
+            if skip {
+                debug!("Skipping remaining posts for {creator}");
+                break;
+            }
+
             let client = self.clone();
             tasks.spawn(async move { client.fetch::<APIListCreatorPost>(&url).await });
         }
@@ -91,6 +118,7 @@ impl FanboxClient {
             .into_iter()
             .try_collect::<Vec<APIListCreatorPost>>()
             .map(|posts| posts.into_iter().flatten().collect::<APIListCreatorPost>())
+            .map(|posts| (posts, last_date.unwrap_or_default()))
     }
 
     pub async fn get_post(&self, post_id: &str) -> Result<APIPost> {

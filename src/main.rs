@@ -2,6 +2,7 @@
 
 mod api;
 mod config;
+mod context;
 mod creator;
 mod post;
 
@@ -13,7 +14,7 @@ use api::FanboxClient;
 use config::ProgressSet;
 use creator::{get_creator_posts, get_creators};
 use fanbox::{Creator, PostListItem};
-use log::{info, warn};
+use log::{debug, info, warn};
 use plyne::define_tasks;
 use post::{file::download_files, get_posts, sync_posts};
 use post_archiver::{manager::PostArchiverManager, utils::VERSION};
@@ -50,16 +51,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Connecting to PostArchiver");
     let manager = PostArchiverManager::open_or_create(config.output())?;
+
+    let context = context::Context::load(&manager);
     let manager = Rc::new(Mutex::new(manager));
+
 
     let client = FanboxClient::new(&config);
     let progress = ProgressSet::new(&config);
 
-    FanboxSystem::new(manager, config, client, progress)
+    FanboxSystem::new(manager.clone(), config, client, context.clone(), progress)
         .execute()
         .await;
 
     info!("All done!");
+
+    context.save(&*manager.lock().await);
+    debug!("Context saved");
     Ok(())
 }
 
@@ -75,6 +82,7 @@ define_tasks! {
         Manager: Rc<Mutex<PostArchiverManager>>,
         Config: config::Config,
         Client: FanboxClient,
+        Context: context::Context,
         Progress: config::ProgressSet,
     }
     tasks {
