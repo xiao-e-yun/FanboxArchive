@@ -4,14 +4,16 @@ pub mod file;
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
+    api::FanboxClient,
+    config::ProgressSet,
     creator::sync_creator,
     fanbox::{Comment, Post, PostListItem},
-    Client, FilesPipelineInput, Manager, PostsPipelineOutput, Progress, SyncPipelineInput,
-    SyncPipelineOutput,
+    FileEvent, Manager, SyncEvent,
 };
 use file::FanboxFileMeta;
 use futures::try_join;
 use log::{debug, error, info, trace};
+use plyne::{Input, Output};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
     manager::{PostArchiverConnection, PostArchiverManager},
@@ -39,11 +41,11 @@ pub fn filter_unsynced_post(
 }
 
 pub async fn get_posts(
-    mut posts_pipeline: PostsPipelineOutput,
-    files_pipeline: FilesPipelineInput,
-    sync_piepline: SyncPipelineInput,
-    client: Client,
-    pb: Progress,
+    mut posts_pipeline: Output<Vec<PostListItem>>,
+    files_pipeline: Input<FileEvent>,
+    sync_piepline: Input<SyncEvent>,
+    client: &FanboxClient,
+    pb: &ProgressSet,
 ) {
     let mut join_set = JoinSet::new();
 
@@ -93,7 +95,7 @@ pub async fn get_posts(
     pb.posts.finish();
 }
 
-pub async fn sync_posts(mut sync_piepline: SyncPipelineOutput, manager: Manager) {
+pub async fn sync_posts(mut sync_piepline: Output<SyncEvent>, manager: &Manager) {
     let mut authors = HashMap::new();
     'post: while let Some((post, comments, rx)) = sync_piepline.recv().await {
         let mut manager = manager.lock().await;

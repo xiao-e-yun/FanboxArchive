@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use futures::join;
 use log::{error, info, warn};
+use plyne::{Input, Output};
 use post_archiver::{
     importer::{UnsyncAlias, UnsyncAuthor},
     manager::PostArchiverManager,
@@ -11,17 +12,14 @@ use post_archiver_utils::Result;
 use rusqlite::Transaction;
 
 use crate::{
-    fanbox::{Creator, Post, User},
-    post::filter_unsynced_post,
-    Client, Config, Context, CreatorPipelineInput, CreatorPipelineOutput, Manager,
-    PostsPipelineInput, Progress,
+    api::FanboxClient, config::{Config, ProgressSet}, context::Context, fanbox::{Creator, Post, PostListItem, User}, post::filter_unsynced_post, Manager
 };
 
 pub async fn get_creators(
-    config: Config,
-    client: Client,
-    creator_pipeline: CreatorPipelineInput,
-    pb: Progress,
+    config: &Config,
+    client: &FanboxClient,
+    creator_pipeline: Input<Creator>,
+    pb: &ProgressSet,
 ) {
     let accepts = config.accepts();
     info!("Accepts:");
@@ -81,13 +79,13 @@ pub async fn get_creators(
 }
 
 pub async fn get_creator_posts(
-    mut creator_pipeline: CreatorPipelineOutput,
-    posts_pipeline: PostsPipelineInput,
-    context: Context,
-    manager: Manager,
-    config: Config,
-    client: Client,
-    pb: Progress,
+    mut creator_pipeline: Output<Creator>,
+    posts_pipeline: Input<Vec<PostListItem>>,
+    context: &Context,
+    manager: &Manager,
+    config: &Config,
+    client: &FanboxClient,
+    pb: &ProgressSet,
 ) {
     while let Some(creator) = creator_pipeline.recv().await {
         let mut creator_record = context

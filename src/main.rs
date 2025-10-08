@@ -8,10 +8,11 @@ mod post;
 
 pub mod fanbox;
 
-use std::{collections::HashMap, error::Error, rc::Rc};
+use std::{collections::HashMap, error::Error};
 
 use api::FanboxClient;
-use config::ProgressSet;
+use config::{Config, ProgressSet};
+use context::Context;
 use creator::{get_creator_posts, get_creators};
 use fanbox::{Creator, PostListItem};
 use log::{debug, info, warn};
@@ -53,13 +54,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let manager = PostArchiverManager::open_or_create(config.output())?;
 
     let context = context::Context::load(&manager);
-    let manager = Rc::new(Mutex::new(manager));
-
+    let manager = Mutex::new(manager);
 
     let client = FanboxClient::new(&config);
     let progress = ProgressSet::new(&config);
 
-    FanboxSystem::new(manager.clone(), config, client, context.clone(), progress)
+    let FanboxSystemContext {
+        context, manager, ..
+    } = FanboxSystem::new(manager, config, client, context.clone(), progress)
         .execute()
         .await;
 
@@ -70,20 +72,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+pub type Manager = Mutex<PostArchiverManager>;
+pub type FileEvent = (
+    Vec<String>,
+    tokio::sync::oneshot::Sender<HashMap<String, TempPath>>,
+);
+pub type SyncEvent = (
+    fanbox::Post,
+    Vec<fanbox::Comment>,
+    tokio::sync::oneshot::Receiver<HashMap<String, TempPath>>,
+);
+
 define_tasks! {
     FanboxSystem
     pipelines {
-        CreatorPipeline: Creator,
-        PostsPipeline: Vec<PostListItem>,
-        FilesPipeline: (Vec<String>, tokio::sync::oneshot::Sender<HashMap<String, TempPath>>),
-        SyncPipeline: (fanbox::Post, Vec<fanbox::Comment>, tokio::sync::oneshot::Receiver<HashMap<String, TempPath>>),
+        creator_pipeline: Creator,
+        posts_pipeline: Vec<PostListItem>,
+        files_pipeline: FileEvent,
+        sync_pipeline: SyncEvent,
     }
     vars {
-        Manager: Rc<Mutex<PostArchiverManager>>,
-        Config: config::Config,
-        Client: FanboxClient,
-        Context: context::Context,
-        Progress: config::ProgressSet,
+        manager: Manager,
+        config: Config,
+        client: FanboxClient,
+        context: Context,
+        progress_set: ProgressSet,
     }
     tasks {
         get_creators,

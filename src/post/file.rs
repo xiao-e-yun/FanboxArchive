@@ -3,19 +3,18 @@ use std::{collections::HashMap, sync::Arc};
 use futures::future::try_join_all;
 use log::error;
 use mime_guess::MimeGuess;
+use plyne::Output;
 use post_archiver::importer::file_meta::UnsyncFileMeta;
 use serde_json::json;
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    api::FanboxClient,
-    fanbox::{PostBody, PostFile, PostImage},
-    Config, FilesPipelineOutput, Progress,
+    api::FanboxClient, config::ProgressSet, fanbox::{PostBody, PostFile, PostImage}, Config, FileEvent
 };
 
-pub async fn download_files(mut files_pipeline: FilesPipelineOutput, config: Config, pb: Progress) {
+pub async fn download_files(mut files_pipeline: Output<FileEvent>, config: &Config, pb: &ProgressSet) {
     let mut tasks = JoinSet::new();
-    let client = FanboxClient::new(&config);
+    let client = FanboxClient::new(config);
 
     let semaphore = Arc::new(Semaphore::new(3));
     while let Some((urls, tx)) = files_pipeline.recv().await {

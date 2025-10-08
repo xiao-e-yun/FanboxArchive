@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, rc::Rc};
+use std::collections::HashMap;
 
 use dashmap::DashMap;
 use post_archiver::manager::PostArchiverManager;
@@ -6,22 +6,9 @@ use serde::{Deserialize, Serialize};
 
 const FANBOX_ARCHIVE_FEATURE: &str = "fanbox-archive";
 
-#[derive(Debug, Clone)]
-pub struct Context {
-    inner: Rc<ContextInner>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ContextInner {
+pub struct Context {
     pub creators: DashMap<String, CachedCreators>,
-}
-
-impl Deref for Context {
-    type Target = ContextInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
 }
 
 impl Context {
@@ -31,10 +18,7 @@ impl Context {
             .unwrap_or_default();
 
         let json = serde_json::to_value(&extra).unwrap();
-        let inner = serde_json::from_value(json).unwrap_or_default();
-        Context {
-            inner: Rc::new(inner),
-        }
+        serde_json::from_value(json).unwrap_or_default()
     }
 
     pub fn save(&self, manager: &PostArchiverManager) {

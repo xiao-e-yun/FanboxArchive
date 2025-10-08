@@ -1105,9 +1105,9 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "magic-params"
-version = "0.0.4"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c6fd8b8fb2096fe19f0ec254d486143331699b0a7e440997a701aa7a940a347"
+checksum = "428a0260d38fc9439c7076c0e11dc3641abcda34969000ad716430dd0b87367d"
 dependencies = [
  "paste",
  "seq-macro",
@@ -1332,9 +1332,9 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "plyne"
-version = "0.0.2"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaa295162c05ff5c5c053862c6cf32608c13e5befac59126d82ee4ff2d984268"
+checksum = "4d2b299bc647c6b1ca2bf9481a7d42217847415d6dae3f7faab76189e96dbfd4"
 dependencies = [
  "futures",
  "magic-params",
