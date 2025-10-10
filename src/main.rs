@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 format!("v{}", env!("CARGO_PKG_VERSION")).as_str(),
             ),
             ("PostArchiver Version", VERSION),
-            ("Force", config.force().to_string().as_str()),
+            ("Strategy", config.strategy().as_str()),
             ("Limit", config.limit().to_string().as_str()),
             ("Skip Free", config.skip_free().to_string().as_str()),
             ("Accepts", config.accepts().list().join(", ").as_str()),

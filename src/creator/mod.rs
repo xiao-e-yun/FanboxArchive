@@ -12,7 +12,12 @@ use post_archiver_utils::Result;
 use rusqlite::Transaction;
 
 use crate::{
-    api::FanboxClient, config::{Config, ProgressSet}, context::Context, fanbox::{Creator, Post, PostListItem, User}, post::filter_unsynced_post, Manager
+    api::FanboxClient,
+    config::{Config, ProgressSet, Strategy},
+    context::Context,
+    fanbox::{Creator, Post, PostListItem, User},
+    post::filter_unsynced_post,
+    Manager,
 };
 
 pub async fn get_creators(
@@ -95,7 +100,7 @@ pub async fn get_creator_posts(
 
         let last_updated = creator_record
             .last_updated(creator.fee)
-            .filter(|_| !config.force());
+            .filter(|_| config.strategy() != Strategy::Increment);
 
         let Ok((posts, last_date)) = client.get_posts(&creator.creator_id, last_updated).await
         else {
@@ -109,7 +114,9 @@ pub async fn get_creator_posts(
         let posts = posts
             .into_iter()
             .filter(|post| config.filter_post(post))
-            .filter(|post| config.force() || filter_unsynced_post(&manager, post))
+            .filter(|post| {
+                config.strategy() == Strategy::Force || filter_unsynced_post(&manager, post)
+            })
             .collect::<Vec<_>>();
 
         info!("Found {} posts ({})", posts.len(), creator.creator_id);

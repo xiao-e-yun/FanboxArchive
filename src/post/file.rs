@@ -9,10 +9,17 @@ use serde_json::json;
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    api::FanboxClient, config::ProgressSet, fanbox::{PostBody, PostFile, PostImage}, Config, FileEvent
+    api::FanboxClient,
+    config::ProgressSet,
+    fanbox::{PostBody, PostFile, PostImage},
+    Config, FileEvent,
 };
 
-pub async fn download_files(mut files_pipeline: Output<FileEvent>, config: &Config, pb: &ProgressSet) {
+pub async fn download_files(
+    mut files_pipeline: Output<FileEvent>,
+    config: &Config,
+    pb: &ProgressSet,
+) {
     let mut tasks = JoinSet::new();
     let client = FanboxClient::new(config);
 

@@ -1,12 +1,13 @@
 pub mod save_type;
 
 use chrono::Utc;
-use clap::{arg, Parser};
+use clap::{arg, Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use save_type::SaveType;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::Deref, path::PathBuf};
 
 use crate::fanbox::{Creator, PostListItem};
@@ -22,9 +23,9 @@ pub struct Config {
     /// Which you type want to save
     #[arg(short, long, default_value = "supporting", env = "SAVE")]
     save: SaveType,
-    /// Force download
-    #[arg(short, long)]
-    force: bool,
+    /// Archiving strategy
+    #[arg(long, default_value = "increment")]
+    strategy: Strategy,
     /// Whitelist of creator IDs
     #[arg(short, long, num_args = 0..)]
     whitelist: Vec<String>,
@@ -38,10 +39,10 @@ pub struct Config {
     #[arg(long, name = "skip-free")]
     skip_free: bool,
     /// User agent when blocking
-    #[arg(long, name = "user-agent", default_value = "")]
+    #[arg(long, name = "user-agent")]
     user_agent: String,
     /// Custom cookies.  Exapmle: `name=value; name2=value2; ...`  (cf_clearance is required for blocking)
-    #[arg(long, name = "cookies", default_value = "")]
+    #[arg(long, name = "cookies")]
     cookies: String,
 
     #[command(flatten)]
@@ -152,12 +153,30 @@ impl Config {
         accept
     }
 
-    pub fn force(&self) -> bool {
-        self.force
+    pub fn strategy(&self) -> Strategy {
+        self.strategy
     }
 
     pub fn progress(&self, prefix: &'static str) -> Progress {
         Progress::new(&self.multi, prefix)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, ValueEnum, PartialEq, Eq, Default)]
+pub enum Strategy {
+    #[default]
+    Increment,
+    Full,
+    Force,
+}
+
+impl Strategy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Strategy::Increment => "increment",
+            Strategy::Full => "full",
+            Strategy::Force => "force",
+        }
     }
 }
 
