@@ -100,7 +100,7 @@ pub async fn get_creator_posts(
 
         let last_updated = creator_record
             .last_updated(creator.fee)
-            .filter(|_| config.strategy() != Strategy::Increment);
+            .filter(|_| config.strategy() == Strategy::Increment);
 
         let Ok((posts, last_date)) = client.get_posts(&creator.creator_id, last_updated).await
         else {
