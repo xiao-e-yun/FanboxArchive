@@ -40,10 +40,10 @@ pub struct Config {
     skip_free: bool,
     /// User agent when blocking
     #[arg(long, name = "user-agent")]
-    user_agent: String,
+    user_agent: Option<String>,
     /// Custom cookies.  Exapmle: `name=value; name2=value2; ...`  (cf_clearance is required for blocking)
     #[arg(long, name = "cookies")]
-    cookies: String,
+    cookies: Option<String>,
 
     #[command(flatten)]
     pub verbose: Verbosity<InfoLevel>,
@@ -59,12 +59,12 @@ impl Config {
         let mut config = <Self as Parser>::parse();
         config.init_logger();
 
-        if config.user_agent.is_empty() {
+        if config.user_agent.is_none() {
             let dt = Utc::now().timestamp_millis() as u64 / 1000;
             let major = dt % 2 + 4;
             let webkit = dt / 2 % 64;
             let chrome = dt / 128 % 5 + 132;
-            config.user_agent = format!("Mozilla/{major}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{webkit} (KHTML, like Gecko) Chrome/{chrome}.0.0.0 Safari/537.{webkit}",
+            config.user_agent = Some(format!("Mozilla/{major}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{webkit} (KHTML, like Gecko) Chrome/{chrome}.0.0.0 Safari/537.{webkit}")
             );
         }
 
@@ -91,6 +91,8 @@ impl Config {
         );
 
         self.cookies
+            .clone()
+            .unwrap_or_default()
             .split(';')
             .filter_map(|cookie| {
                 let trimmed = cookie.trim();
@@ -107,7 +109,7 @@ impl Config {
     }
     /// Get the user agent for blocking
     pub fn user_agent(&self) -> String {
-        self.user_agent.clone()
+        self.user_agent.clone().unwrap_or_default()
     }
     pub fn accepts(&self) -> SaveType {
         self.save
