@@ -33,7 +33,7 @@ pub struct Config {
     #[arg(short, long, num_args = 0..)]
     blacklist: Vec<String>,
     /// Limit fetch number of posts per minute
-    #[arg(long, default_value = "120")]
+    #[arg(long, default_value = "60")]
     limit: u32,
     /// Skip free post
     #[arg(long, name = "skip-free")]
