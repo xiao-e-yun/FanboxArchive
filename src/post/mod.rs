@@ -1,18 +1,19 @@
 mod body;
 pub mod file;
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::{
     api::FanboxClient,
     config::ProgressSet,
+    context::Context,
     creator::sync_creator,
     fanbox::{Comment, Post, PostListItem},
     FileEvent, Manager, SyncEvent,
 };
 use file::FanboxFileMeta;
 use futures::try_join;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use plyne::{Input, Output};
 use post_archiver::{
     importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
@@ -25,7 +26,7 @@ use tempfile::TempPath;
 use tokio::{
     fs::{create_dir_all, File, OpenOptions},
     io, join,
-    sync::oneshot,
+    sync::{oneshot, Mutex},
     task::JoinSet,
 };
 
@@ -41,19 +42,26 @@ pub fn filter_unsynced_post(
 }
 
 pub async fn get_posts(
+    posts_input: Input<Vec<PostListItem>>,
     mut posts_pipeline: Output<Vec<PostListItem>>,
     files_pipeline: Input<FileEvent>,
     sync_piepline: Input<SyncEvent>,
     client: &FanboxClient,
+    context: &Context,
     pb: &ProgressSet,
 ) {
     let mut join_set = JoinSet::new();
 
+    // check failed posts
+    check_failed_posts(posts_input, context, pb);
+
+    let failed_posts = Arc::new(Mutex::new(vec![]));
     while let Some(posts) = posts_pipeline.recv().await {
         for post in posts {
             let posts_pb = pb.posts.clone();
             let files_pb = pb.files.clone();
             let client = client.clone();
+            let failed_posts = failed_posts.clone();
             let files_pipeline = files_pipeline.clone();
             let sync_piepline = sync_piepline.clone();
             join_set.spawn(async move {
@@ -83,7 +91,11 @@ pub async fn get_posts(
                         files_pipeline.send((files, tx)).unwrap();
                         sync_piepline.send((post, comments, rx)).unwrap();
                     }
-                    (Err(e), _) => error!("Failed to fetch post {}: {}", post.id, e),
+                    (Err(e), _) => {
+                        error!("Failed to fetch post {}: {}", post.id, e);
+                        let mut failed_posts = failed_posts.lock().await;
+                        failed_posts.push(post);
+                    }
                 };
 
                 posts_pb.inc(1);
@@ -92,7 +104,28 @@ pub async fn get_posts(
     }
 
     join_set.join_all().await;
+
+    update_failed_posts(context, failed_posts).await;
+
     pb.posts.finish();
+}
+
+fn check_failed_posts(posts_input: Input<Vec<PostListItem>>, context: &Context, pb: &ProgressSet) {
+    debug!("Checking failed posts");
+    let failed_posts = context.failed_posts.borrow();
+    if failed_posts.is_empty() { return }
+    warn!("Retrying {} previously failed posts", failed_posts.len());
+    posts_input.send(failed_posts.clone()).unwrap();
+    pb.posts.inc(failed_posts.len() as u64);
+}
+
+async fn update_failed_posts(context: &Context, failed_posts: Arc<Mutex<Vec<PostListItem>>>) {
+    debug!("Recording failed posts");
+    let updated_failed_posts = Arc::into_inner(failed_posts).unwrap().into_inner();
+    if !updated_failed_posts.is_empty() {
+        error!("{} posts failed to download", updated_failed_posts.len());
+    }
+    *context.failed_posts.borrow_mut() = updated_failed_posts;
 }
 
 pub async fn sync_posts(mut sync_piepline: Output<SyncEvent>, manager: &Manager) {

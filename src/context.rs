@@ -1,14 +1,17 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use dashmap::DashMap;
 use post_archiver::manager::PostArchiverManager;
 use serde::{Deserialize, Serialize};
+
+use crate::fanbox::PostListItem;
 
 const FANBOX_ARCHIVE_FEATURE: &str = "fanbox-archive";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
     pub creators: DashMap<String, CachedCreators>,
+    pub failed_posts: RefCell<Vec<PostListItem>>,
 }
 
 impl Context {
@@ -22,10 +25,16 @@ impl Context {
     }
 
     pub fn save(&self, manager: &PostArchiverManager) {
-        let extras = HashMap::from([(
-            "creators".to_string(),
-            serde_json::to_value(&self.creators).unwrap(),
-        )]);
+        let extras = HashMap::from([
+            (
+                "creators".to_string(),
+                serde_json::to_value(&self.creators).unwrap(),
+            ),
+            (
+                "failed_posts".to_string(),
+                serde_json::to_value(&*self.failed_posts.borrow()).unwrap(),
+            ),
+        ]);
         manager.set_feature_with_extra(FANBOX_ARCHIVE_FEATURE, 1, extras);
     }
 }
