@@ -116,7 +116,7 @@ fn check_failed_posts(posts_input: Input<Vec<PostListItem>>, context: &Context, 
     if failed_posts.is_empty() { return }
     warn!("Retrying {} previously failed posts", failed_posts.len());
     posts_input.send(failed_posts.clone()).unwrap();
-    pb.posts.inc(failed_posts.len() as u64);
+    pb.posts.inc_length(failed_posts.len() as u64);
 }
 
 async fn update_failed_posts(context: &Context, failed_posts: Arc<Mutex<Vec<PostListItem>>>) {
