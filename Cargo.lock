@@ -1374,9 +1374,9 @@ dependencies = [
 
 [[package]]
 name = "post-archiver-utils"
-version = "0.0.7"
+version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "085cb75e979dbea5057937278e8e76bf329ad4fc35a8d43d60ce6c4a1f7d6326"
+checksum = "586860ebc3b4945d5a279f9afbb0718463b3b7b6074d1cba425d9240800f908d"
 dependencies = [
  "async-trait",
  "console",
