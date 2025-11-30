@@ -56,14 +56,8 @@ impl Config {
     /// Parse the configuration from the environment and command line arguments
     pub fn parse() -> Self {
         dotenv().ok();
-        let mut config = <Self as Parser>::parse();
+        let config = <Self as Parser>::parse();
         config.init_logger();
-
-        if config.user_agent.is_none() {
-            let random_user_agent = get_rua();
-            config.user_agent = Some(random_user_agent.to_string());
-        }
-
         config
     }
     /// Create a logger with the configured verbosity level
@@ -105,7 +99,7 @@ impl Config {
     }
     /// Get the user agent for blocking
     pub fn user_agent(&self) -> String {
-        self.user_agent.clone().unwrap_or_default()
+        self.user_agent.clone().unwrap_or_else(|| get_rua().to_string()) // NOTE get rua never choose IE 
     }
     pub fn accepts(&self) -> SaveType {
         self.save

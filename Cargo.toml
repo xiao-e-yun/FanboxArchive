@@ -31,4 +31,4 @@ plyne = "0.1.1"
 dashmap = { version = "6.1.0", features = ["serde"] }
 itertools = "0.14.0"
 tempfile = "3.22.0"
-fake_user_agent = "0.2.2"
+fake_user_agent = "=0.2.2"
