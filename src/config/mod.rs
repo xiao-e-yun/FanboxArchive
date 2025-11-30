@@ -1,9 +1,9 @@
 pub mod save_type;
 
-use chrono::Utc;
 use clap::{arg, Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
+use fake_user_agent::get_rua;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use save_type::SaveType;
@@ -60,12 +60,8 @@ impl Config {
         config.init_logger();
 
         if config.user_agent.is_none() {
-            let dt = Utc::now().timestamp_millis() as u64 / 1000;
-            let major = dt % 2 + 4;
-            let webkit = dt / 2 % 64;
-            let chrome = dt / 128 % 5 + 132;
-            config.user_agent = Some(format!("Mozilla/{major}.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.{webkit} (KHTML, like Gecko) Chrome/{chrome}.0.0.0 Safari/537.{webkit}")
-            );
+            let random_user_agent = get_rua();
+            config.user_agent = Some(random_user_agent.to_string());
         }
 
         config
