@@ -1,6 +1,6 @@
 pub mod save_type;
 
-use clap::{arg, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
 use fake_user_agent::get_rua;
