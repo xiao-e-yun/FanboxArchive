@@ -1,61 +1,71 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, fs::read_to_string, path::Path};
 
-use dashmap::DashMap;
-use post_archiver::manager::PostArchiverManager;
+use dashmap::{mapref::one::RefMut, DashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::fanbox::PostListItem;
 
-const FANBOX_ARCHIVE_FEATURE: &str = "fanbox-archive";
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
-    pub creators: DashMap<String, CachedCreators>,
+    pub creators: DashMap<String, CachedCreator>,
     pub failed_posts: RefCell<Vec<PostListItem>>,
 }
 
 impl Context {
-    pub fn load(manager: &PostArchiverManager) -> Self {
-        let (_, extra) = manager
-            .get_feature_with_extra(FANBOX_ARCHIVE_FEATURE)
-            .unwrap_or_default();
+    pub const RELATION_PATH: &'static str = "configs/fanbox-archive.json";
 
-        let json = serde_json::to_value(&extra).unwrap();
-        serde_json::from_value(json).unwrap_or_default()
+    pub fn load(path: &Path) -> Self {
+        let path = path.join(Self::RELATION_PATH);
+        let json = read_to_string(path).unwrap_or_default();
+        serde_json::from_str(&json).unwrap_or_default()
     }
 
-    pub fn save(&self, manager: &PostArchiverManager) {
-        let extras = HashMap::from([
-            (
-                "creators".to_string(),
-                serde_json::to_value(&self.creators).unwrap(),
-            ),
-            (
-                "failed_posts".to_string(),
-                serde_json::to_value(&*self.failed_posts.borrow()).unwrap(),
-            ),
-        ]);
-        manager.set_feature_with_extra(FANBOX_ARCHIVE_FEATURE, 1, extras);
+    pub fn save(&self, path: &Path) {
+        let path = path.join(Self::RELATION_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("Failed to create context folder");
+        let json = serde_json::to_string(self).expect("Failed to serialize context");
+        std::fs::write(path, json).expect("Failed to save context");
+    }
+
+    pub fn get_creator_mut(
+        &self,
+        user_id: &str,
+        creator_id: &str,
+    ) -> RefMut<'_, String, CachedCreator> {
+        self.creators
+            .entry(user_id.to_string())
+            .and_modify(|creator| {
+                if creator.creator_id != creator_id {
+                    creator.old_creator_id = Some(creator.creator_id.clone());
+                    creator.creator_id = creator_id.to_string();
+                }
+            })
+            .or_insert_with(|| CachedCreator {
+                creator_id: creator_id.to_string(),
+                support_records: HashMap::new(),
+                old_creator_id: None,
+            })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CachedCreators {
-    pub updated: i64,
-    pub fee: u32,
+pub struct CachedCreator {
+    pub creator_id: String,
+    /// fee: updated
+    pub support_records: HashMap<u32, i64>,
+    #[serde(skip)]
+    pub old_creator_id: Option<String>,
 }
 
-impl CachedCreators {
+impl CachedCreator {
     pub fn last_updated(&self, fee: u32) -> Option<i64> {
-        let fee_unchanged = fee <= self.fee;
-        fee_unchanged.then_some(self.updated)
+        // Find the maximum updated timestamp for all fees that are greater than or equal to the given fee.
+        self.support_records
+            .iter()
+            .filter_map(|(f, u)| if *f >= fee { Some(*u) } else { None })
+            .max()
     }
     pub fn update(&mut self, updated: i64, fee: u32) {
-        if updated > self.updated {
-            self.updated = updated;
-        }
-        if fee > self.fee {
-            self.fee = fee;
-        }
+        self.support_records.insert(fee, updated);
     }
 }
