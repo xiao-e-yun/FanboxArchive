@@ -14,7 +14,7 @@ use rusqlite::Transaction;
 use crate::{
     api::FanboxClient,
     config::{Config, ProgressSet, Strategy},
-    context::Context,
+    context::{CachedCreator, Context},
     fanbox::{Creator, Post, PostListItem, User},
     post::filter_unsynced_post,
     Manager,
@@ -93,10 +93,23 @@ pub async fn get_creator_posts(
     pb: &ProgressSet,
 ) {
     while let Some(creator) = creator_pipeline.recv().await {
-        let mut creator_record = context
-            .creators
-            .entry(creator.creator_id.clone())
-            .or_default();
+        let mut creator_record = context.get_creator_mut(&creator.user_id, &creator.creator_id);
+
+        if let Some(old_creator_id) = &creator_record.old_creator_id {
+            info!(
+                "Creator ID changed: {} -> {}",
+                old_creator_id, creator.creator_id
+            );
+
+            let mut manager = manager.lock().await;
+            match patch_creator_source(&mut manager, &creator_record) {
+                Ok(cols) => info!("Patched {} posts for creator {}", cols, creator.creator_id),
+                Err(e) => error!(
+                    "Failed to patch posts for creator {}: {}",
+                    creator.creator_id, e
+                ),
+            }
+        }
 
         let last_updated = creator_record
             .last_updated(creator.fee)
@@ -126,6 +139,44 @@ pub async fn get_creator_posts(
     }
 
     pb.authors.finish();
+}
+
+pub fn patch_creator_source(
+    manager: &mut PostArchiverManager,
+    creator: &CachedCreator,
+) -> Result<usize> {
+    let fanbox_platform = manager.import_platform("fanbox".to_string())?;
+
+    let tx = manager.transaction().unwrap();
+    let conn = tx.conn();
+
+    // update author alias
+    let stmt = "UPDATE author_aliases SET source = ?1, link = 'https://' || ?1 || '.fanbox.cc/' WHERE platform = ?2 AND source = ?3";
+
+    conn.execute(
+        stmt,
+        rusqlite::params![
+            creator.creator_id,
+            fanbox_platform,
+            creator.old_creator_id.as_ref().unwrap()
+        ],
+    )?;
+
+    // update posts
+    let stmt =
+        "UPDATE posts SET source = replace(source, ?1, ?2) WHERE platform = ?3 AND source LIKE ?1 || '%'";
+    let format_source = |creator_id: &str| format!("https://{creator_id}.fanbox.cc/posts/");
+
+    let old_source = format_source(creator.old_creator_id.as_ref().unwrap());
+    let new_source = format_source(&creator.creator_id);
+
+    let cols = conn.execute(
+        stmt,
+        rusqlite::params![old_source, new_source, fanbox_platform],
+    )?;
+
+    tx.commit()?;
+    Ok(cols)
 }
 
 pub fn display_creators(creators: &HashSet<Creator>) {

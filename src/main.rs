@@ -51,23 +51,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     info!("Connecting to PostArchiver");
-    let manager = PostArchiverManager::open_or_create(config.output())?;
+    let output = config.output().to_path_buf();
+    let output = output.as_path();
 
-    let context = context::Context::load(&manager);
+    let manager = PostArchiverManager::open_or_create(output)?;
+
+    let context = context::Context::load(output);
     let manager = Mutex::new(manager);
 
     let client = FanboxClient::new(&config);
     let progress = ProgressSet::new(&config);
 
-    let FanboxSystemContext {
-        context, manager, ..
-    } = FanboxSystem::new(manager, config, client, context.clone(), progress)
-        .execute()
-        .await;
+    let FanboxSystemContext { context, .. } =
+        FanboxSystem::new(manager, config, client, context, progress)
+            .execute()
+            .await;
 
     info!("All done!");
 
-    context.save(&*manager.lock().await);
+    context.save(output);
     debug!("Context saved");
     Ok(())
 }
