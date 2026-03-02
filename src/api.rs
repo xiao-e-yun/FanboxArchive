@@ -164,7 +164,13 @@ impl FanboxClient {
 
     pub async fn get_following_creators(&self) -> Result<APIListFollowingCreator> {
         let url = "https://api.fanbox.cc/creator.listFollowing";
-        self.fetch(url).await
+
+        #[derive(Deserialize)]
+        struct Response {
+            creators: APIListFollowingCreator,
+        }
+
+        self.fetch::<Response>(url).await.map(|response| response.creators)
     }
 
     pub async fn get_posts(
