@@ -9,7 +9,7 @@ repository = "https://github.com/xiao-e-yun/FanboxArchive"
 
 
 [dependencies]
-post-archiver = { version = "0.4.5", features = ["importer"] }
+post-archiver = { version = "0.5.3", features = ["importer"] }
 # other dependencies
 chrono = { version = "0.4.38", features = ["serde"] }
 rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }
@@ -24,7 +24,7 @@ tokio = { version = "1.38.0", features = ["full"] }
 futures = "0.3.31"
 reqwest = { version = "0.12", features = ["json", "stream", "native-tls-alpn"] }
 mime_guess = "2.0.5"
-post-archiver-utils = "0.0.8"
+post-archiver-utils = "0.1.1"
 indicatif = "0.18.0"
 indicatif-log-bridge = "0.2.3"
 plyne = "0.1.1"

@@ -1371,22 +1371,23 @@ dependencies = [
 
 [[package]]
 name = "post-archiver"
-version = "0.4.5"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbc303f18e78c010fee94e50a2fc5acabd05f5025e0f0e4d685269b97c6e3e2c"
+checksum = "80358d4e112680a0894dba46100795125133d6aaef14ee0c377b03d375db81e3"
 dependencies = [
  "chrono",
  "dashmap",
  "rusqlite",
  "serde",
  "serde_json",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "post-archiver-utils"
-version = "0.0.8"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "586860ebc3b4945d5a279f9afbb0718463b3b7b6074d1cba425d9240800f908d"
+checksum = "29aadcb1e21e638fa53c6fe1a547cf91134db7a13fdc6719ece1a1c3ec92848d"
 dependencies = [
  "async-trait",
  "console",
