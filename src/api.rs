@@ -159,7 +159,13 @@ impl FanboxClient {
 
     pub async fn get_supporting_creators(&self) -> Result<APIListSupportingCreator> {
         let url = "https://api.fanbox.cc/plan.listSupporting";
-        self.fetch(url).await
+
+        #[derive(Deserialize)]
+        struct Response {
+            plans: APIListSupportingCreator,
+        }
+
+        self.fetch::<Response>(url).await.map(|response| response.plans)
     }
 
     pub async fn get_following_creators(&self) -> Result<APIListFollowingCreator> {
