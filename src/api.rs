@@ -185,7 +185,17 @@ impl FanboxClient {
         updated: Option<i64>,
     ) -> Result<(APIListCreatorPost, i64)> {
         let url = format!("https://api.fanbox.cc/post.paginateCreator?creatorId={creator}",);
-        let urls: APIListCreatorPaginate = self.fetch(&url).await?;
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PaginateResponse {
+            page_urls: APIListCreatorPaginate,
+        }
+
+        let urls = self
+            .fetch::<PaginateResponse>(&url)
+            .await?
+            .page_urls;
 
         let mut tasks = JoinSet::new();
         let mut skip = false;
@@ -212,7 +222,17 @@ impl FanboxClient {
             }
 
             let client = self.clone();
-            tasks.spawn(async move { client.fetch::<APIListCreatorPost>(&url).await });
+            tasks.spawn(async move {
+                #[derive(Deserialize)]
+                struct ListResponse {
+                    posts: APIListCreatorPost,
+                }
+
+                client
+                    .fetch::<ListResponse>(&url)
+                    .await
+                    .map(|response| response.posts)
+            });
         }
 
         tasks
@@ -226,7 +246,13 @@ impl FanboxClient {
 
     pub async fn get_post(&self, post_id: &str) -> Result<APIPost> {
         let url = format!("https://api.fanbox.cc/post.info?postId={post_id}");
-        self.fetch(&url).await
+
+        #[derive(Deserialize)]
+        struct Response {
+            post: APIPost,
+        }
+
+        self.fetch::<Response>(&url).await.map(|response| response.post)
     }
 
     pub async fn get_post_comments(&self, id: &str, comment_count: u32) -> Result<APIPostComments> {
