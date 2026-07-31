@@ -118,7 +118,7 @@ pub async fn get_creator_posts(
         let Ok((posts, last_date)) = client.get_posts(&creator.creator_id, last_updated).await
         else {
             error!("Failed to get posts for creator: {}", creator.creator_id);
-            return;
+            continue;
         };
 
         creator_record.update(last_date, creator.fee);
