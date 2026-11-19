@@ -65,9 +65,9 @@ impl FanboxClient {
 
     pub fn generate_user_headers(user_agent: &str) -> HeaderMap {
         let mut headers = browser_headers(user_agent);
-        let referer: HeaderValue = "https://www.fanbox.cc/".parse().unwrap();
-        headers.insert(header::ORIGIN, referer.clone());
-        headers.insert(header::REFERER, referer);
+        // Origin must not have a trailing slash; Fanbox rejects it with 403 general_error.
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://www.fanbox.cc"));
+        headers.insert(header::REFERER, HeaderValue::from_static("https://www.fanbox.cc/"));
         headers
     }
 
@@ -96,6 +96,7 @@ impl FanboxClient {
 
     /// Map a non-success response using Fanbox's JSON `error` field when present.
     fn status_error(&self, status: StatusCode, body: String) -> RequestError {
+        debug!("{status} response body: {body}");
         let error = serde_json::from_str::<FanboxAPIResponse<IgnoredAny>>(&body)
             .map(|r| r.error)
             .unwrap_or_default();
@@ -258,10 +259,17 @@ pub struct FanboxDownloader {
 }
 
 impl FanboxDownloader {
-    pub fn new(pb: ProgressBar) -> Self {
+    pub fn new(config: &Config, pb: ProgressBar) -> Self {
+        // Paid files on downloads.fanbox.cc return 403 without the session cookie.
+        let headers = HeaderMap::from_iter([
+            (header::COOKIE, config.cookies().parse().unwrap()),
+            (header::USER_AGENT, config.user_agent().parse().unwrap()),
+            (header::REFERER, HeaderValue::from_static("https://www.fanbox.cc/")),
+        ]);
+
         Self {
             inner: ArchiveClient::new(
-                Client::new(),
+                Client::builder().default_headers(headers).build().unwrap(),
                 Limit {
                     per_min: NonZeroU32::new(90).unwrap(),
                     burst: NonZeroU32::new(4).unwrap(),

@@ -33,7 +33,7 @@ pub async fn posts(
     progress: ProgressSet,
 ) {
     let post_tasks = TaskSet::new("posts").limit(4);
-    let downloader = FanboxDownloader::new(progress.files.clone());
+    let downloader = FanboxDownloader::new(config, progress.files.clone());
 
     let mut seen = HashSet::new();
 

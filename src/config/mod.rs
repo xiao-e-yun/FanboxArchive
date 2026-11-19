@@ -15,7 +15,7 @@ use crate::fanbox::{Creator, PostListItem};
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
     /// Your `FANBOXSESSID` cookie
-    #[clap(env = "FANBOXSESSID")]
+    #[clap(env = "FANBOXSESSID", hide_env_values = true)]
     session: String,
     /// Which you path want to save
     #[arg(default_value = "./archive", env = "OUTPUT")]
@@ -141,8 +141,6 @@ impl Config {
 
         // skip_free is true and the post is free
         accept &= !(self.skip_free && post.fee_required == 0);
-        // is_restricted means the post is for supporters only
-        accept &= !post.is_restricted;
 
         accept
     }
