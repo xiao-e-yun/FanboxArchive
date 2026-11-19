@@ -1341,7 +1341,9 @@ dependencies = [
 
 [[package]]
 name = "post-archiver"
-version = "0.0.0"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5fabe6e0026ff769182d00df0e823a3a38a267fe3cd486c4789261f35cad355"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -1352,7 +1354,9 @@ dependencies = [
 
 [[package]]
 name = "post-archiver-utils"
-version = "0.0.1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15dae877d03adde322c467c585e5a248af09acd7c378abbee0512656594407af"
 dependencies = [
  "console",
  "env_logger",
