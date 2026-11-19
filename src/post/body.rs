@@ -149,18 +149,27 @@ impl PostBlock {
                 None => UnsyncContent::Text(format!("[File Mismatch: {file_id}]")),
             },
             PostBlock::Embed { embed_id } => {
-                let Some(embed) = body.embed_map.as_ref().unwrap().get(&embed_id) else {
+                let Some(embed) = body.embed_map.as_ref().and_then(|m| m.get(&embed_id)) else {
                     return UnsyncContent::Text(format!("[Embed not found: {embed_id}]"));
                 };
                 UnsyncContent::Text(embed.to_text())
             }
             PostBlock::Video { video_id } => {
-                let videos = body.videos.as_ref().unwrap();
-                let video = videos.iter().find(|v| v.video_id == video_id).unwrap();
+                let Some(video) = body
+                    .videos
+                    .iter()
+                    .flatten()
+                    .find(|v| v.video_id == video_id)
+                else {
+                    return UnsyncContent::Text(format!("[Video not found: {video_id}]"));
+                };
                 UnsyncContent::Text(video.to_text())
             }
             PostBlock::UrlEmbed { url_embed_id } => {
-                let Some(url_embed) = body.url_embed_map.as_ref().unwrap().get(&url_embed_id)
+                let Some(url_embed) = body
+                    .url_embed_map
+                    .as_ref()
+                    .and_then(|m| m.get(&url_embed_id))
                 else {
                     return UnsyncContent::Text(format!("[URL Embed not found: {url_embed_id}]"));
                 };
@@ -243,7 +252,10 @@ impl PostEmbed {
                     }
                 }
 
-                let (creator, post) = deconstruct(&self.content_id).unwrap();
+                let Ok((creator, post)) = deconstruct(&self.content_id) else {
+                    error!("Invalid fanbox embed content_id: {}", self.content_id);
+                    return format!("[Fanbox Post ({})]", self.content_id);
+                };
                 format!(
                     "[Fanbox Post ({}/{})]({})",
                     creator,

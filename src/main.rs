@@ -1,5 +1,3 @@
-#![feature(iterator_try_collect)]
-
 mod api;
 mod config;
 mod context;
@@ -14,7 +12,7 @@ use api::FanboxClient;
 use config::{Config, ProgressSet};
 use context::Context;
 use creator::{creator_posts, creators};
-use fanbox::{Creator, PostListItem};
+use fanbox::Creator;
 use log::{debug, info, warn};
 use plyne::define_tasks;
 use post_archiver::{manager::PostArchiverManager, utils::VERSION};

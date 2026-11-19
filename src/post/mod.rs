@@ -1,7 +1,7 @@
 mod body;
 
 use std::{
-    collections::HashMap, mem, path::{Path, PathBuf},
+    collections::HashMap, mem, path::Path,
 };
 
 use crate::{

@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
     fs::read_to_string,
     mem,
@@ -8,7 +7,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::fanbox::PostListItem;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
@@ -71,7 +69,7 @@ impl CachedCreator {
     pub fn push_unimport(&mut self, fee: u32, post_id: String) {
         self.unimports
             .entry(fee)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(post_id);
     }
 }

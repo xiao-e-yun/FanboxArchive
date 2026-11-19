@@ -1,7 +1,5 @@
 use std::{
-    future::Future,
     num::NonZeroU32,
-    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -14,10 +12,9 @@ use reqwest::{
     Client, Url,
 };
 use serde::{de::DeserializeOwned, Deserialize};
-use tempfile::{tempdir, TempDir};
 
 use crate::{
-    config::{Config, ProgressSet},
+    config::Config,
     context::CachedCreator,
     fanbox::{Comment, FollowingCreator, Post, PostComments, PostListItem, SupportingCreator},
 };
@@ -243,7 +240,7 @@ impl FanboxClient {
         }
 
         let posts = self
-            .fetch::<ListResponse>(&url)
+            .fetch::<ListResponse>(url)
             .await
             .map(|response| response.posts)?;
 
