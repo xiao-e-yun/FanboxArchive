@@ -1354,10 +1354,11 @@ dependencies = [
 
 [[package]]
 name = "post-archiver-utils"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15dae877d03adde322c467c585e5a248af09acd7c378abbee0512656594407af"
+checksum = "ddce46814b415c7ff9d3b456db71fe4bdf50e4682f47b203e4e50fd5a07e53c1"
 dependencies = [
+ "clap",
  "console",
  "env_logger",
  "fastrand",

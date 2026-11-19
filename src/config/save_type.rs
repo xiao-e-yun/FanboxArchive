@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, ValueEnum, PartialEq, Eq, Default)]
 pub enum SaveType {
+    /// Creators you follow or support
     All,
+    /// Creators you follow; posts you can't view are skipped
     Following,
+    /// Creators you support with an active plan
     #[default]
     Supporting,
 }

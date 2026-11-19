@@ -20,16 +20,16 @@ pub struct Config {
     /// Archive directory to save into
     #[arg(short, long, default_value = "./archive", env = "OUTPUT")]
     output: PathBuf,
-    /// Which you type want to save
+    /// Which creators to archive
     #[arg(short, long, default_value = "supporting", env = "SAVE")]
     save: SaveType,
     /// Archiving strategy
     #[arg(long, default_value_t)]
     strategy: Strategy,
-    /// Whitelist of creator IDs
+    /// Only archive these creators (the `name` in `name.fanbox.cc`)
     #[arg(short, long, num_args = 0..)]
     whitelist: Vec<String>,
-    /// Blacklist of creator IDs
+    /// Skip these creators (the `name` in `name.fanbox.cc`)
     #[arg(short, long, num_args = 0..)]
     blacklist: Vec<String>,
     /// Limit fetch number of posts per minute
