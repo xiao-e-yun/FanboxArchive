@@ -1,15 +1,24 @@
+use std::{
+    future::Future,
+    num::NonZeroU32,
+    ops::Deref,
+    path::{Path, PathBuf},
+};
+
 use chrono::NaiveDateTime;
+use indicatif::ProgressBar;
 use log::debug;
-use post_archiver_utils::{ArchiveClient, Error, Result};
+use post_archiver_utils::{ArchiveClient, Limit, RequestError, Result, Strategy};
 use reqwest::{
-    Client, Url, header::{self, HeaderMap}
+    header::{self, HeaderMap},
+    Client, Url,
 };
 use serde::{de::DeserializeOwned, Deserialize};
-use tempfile::TempPath;
-use tokio::task::JoinSet;
+use tempfile::{tempdir, TempDir};
 
 use crate::{
-    config::Config,
+    config::{Config, ProgressSet},
+    context::CachedCreator,
     fanbox::{Comment, FollowingCreator, Post, PostComments, PostListItem, SupportingCreator},
 };
 
@@ -34,17 +43,18 @@ impl FanboxClient {
 
         default_headers.insert(header::COOKIE, config.cookies().parse().unwrap());
 
-        let inner = ArchiveClient::builder(
-            Client::builder()
-                .default_headers(default_headers)
-                .build()
-                .unwrap(),
-            config.limit(),
-        )
-        .pre_sec_limit(2)
-        .build();
-
-        Self { inner }
+        Self {
+            inner: ArchiveClient::new(
+                Client::builder()
+                    .default_headers(default_headers)
+                    .build()
+                    .unwrap(),
+                Limit {
+                    per_min: config.limit(),
+                    ..Default::default()
+                },
+            ),
+        }
     }
 
     pub fn generate_user_headers(user_agent: &str) -> HeaderMap {
@@ -87,7 +97,8 @@ impl FanboxClient {
             .next()
             .unwrap_or("12");
 
-        let ua = format!("\"Chromium\";v=\"{version}\",") + &match ua {
+        let ua = format!("\"Chromium\";v=\"{version}\",")
+            + &match ua {
                 "Edg" => format!("\"Microsoft Edge\";v=\"{version}\""),
                 "Chromium" => format!("\"Google Chrome\";v=\"{version}\""),
                 "Firefox" => format!("\"Firefox\";v=\"{version}\""),
@@ -100,10 +111,7 @@ impl FanboxClient {
             (header::ORIGIN, "https://www.fanbox.cc".parse().unwrap()),
             (header::REFERER, "https://www.fanbox.cc/".parse().unwrap()),
             (header::USER_AGENT, user_agent.parse().unwrap()),
-            (
-                header::DNT,
-                "1".parse().unwrap(),
-            ),
+            (header::DNT, "1".parse().unwrap()),
             (
                 header::ACCEPT_LANGUAGE,
                 "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7".parse().unwrap(),
@@ -145,16 +153,11 @@ impl FanboxClient {
         match response.body {
             Some(body) => Ok(body),
             None => Err(match response.error.as_str() {
-                "general_error" => Error::InvalidSession,
-                _ => Error::InvalidResponse(response.error),
-            }),
+                "general_error" => RequestError::InvalidSession,
+                _ => RequestError::InvalidResponse(response.error),
+            }
+            .into()),
         }
-    }
-
-    pub async fn download(&self, url: &str) -> Result<TempPath> {
-        let path = self.inner.download(url).await?;
-        debug!("Downloaded {url}");
-        Ok(path)
     }
 
     pub async fn get_supporting_creators(&self) -> Result<APIListSupportingCreator> {
@@ -165,7 +168,9 @@ impl FanboxClient {
             plans: APIListSupportingCreator,
         }
 
-        self.fetch::<Response>(url).await.map(|response| response.plans)
+        self.fetch::<Response>(url)
+            .await
+            .map(|response| response.plans)
     }
 
     pub async fn get_following_creators(&self) -> Result<APIListFollowingCreator> {
@@ -176,15 +181,20 @@ impl FanboxClient {
             creators: APIListFollowingCreator,
         }
 
-        self.fetch::<Response>(url).await.map(|response| response.creators)
+        self.fetch::<Response>(url)
+            .await
+            .map(|response| response.creators)
     }
 
-    pub async fn get_posts(
+    pub async fn list_post_paninate(
         &self,
-        creator: &str,
-        updated: Option<i64>,
-    ) -> Result<(APIListCreatorPost, i64)> {
-        let url = format!("https://api.fanbox.cc/post.paginateCreator?creatorId={creator}",);
+        creator: &CachedCreator,
+        strategy: Strategy,
+    ) -> Result<APIListCreatorPaginate> {
+        let url = format!(
+            "https://api.fanbox.cc/post.paginateCreator?creatorId={}",
+            creator.creator_id
+        );
 
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -192,56 +202,59 @@ impl FanboxClient {
             page_urls: APIListCreatorPaginate,
         }
 
-        let urls = self
-            .fetch::<PaginateResponse>(&url)
-            .await?
-            .page_urls;
+        let urls = self.fetch::<PaginateResponse>(&url).await?.page_urls;
 
-        let mut tasks = JoinSet::new();
-        let mut skip = false;
-        let mut last_date = None;
-        for url in urls {
-            skip |= {
-                let url = Url::parse(&url).unwrap();
-                let date = url
-                    .query_pairs()
-                    .find(|(k, _)| k == "firstPublishedDatetime")
-                    .map(|(_, v)| {
-                        NaiveDateTime::parse_from_str(&v, "%Y-%m-%d %H:%M:%S")
-                            .unwrap()
-                            .and_utc()
-                            .timestamp()
-                    });
-                last_date = last_date.or(date);
-                matches!((date, updated), (Some(date), Some(updated)) if date <= updated)
-            };
-
-            if skip {
-                debug!("Skipping remaining posts for {creator}");
-                break;
-            }
-
-            let client = self.clone();
-            tasks.spawn(async move {
-                #[derive(Deserialize)]
-                struct ListResponse {
-                    posts: APIListCreatorPost,
-                }
-
-                client
-                    .fetch::<ListResponse>(&url)
-                    .await
-                    .map(|response| response.posts)
-            });
+        if matches!(strategy, Strategy::Full) {
+            return Ok(urls);
         }
 
-        tasks
-            .join_all()
-            .await
+        let trimmed_urls = urls
             .into_iter()
-            .try_collect::<Vec<APIListCreatorPost>>()
-            .map(|posts| posts.into_iter().flatten().collect::<APIListCreatorPost>())
-            .map(|posts| (posts, last_date.unwrap_or_default()))
+            .filter(|url| match parse_url(url) {
+                Some(date) => date > creator.last_updated,
+                None => true,
+            })
+            .collect();
+
+        fn parse_url(url: &str) -> Option<i64> {
+            let url = Url::parse(url).ok()?;
+            let date_str = url
+                .query_pairs()
+                .find(|(k, _)| k == "firstPublishedDatetime")
+                .map(|(_, v)| v.to_string())?;
+
+            NaiveDateTime::parse_from_str(&date_str, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|dt| dt.and_utc().timestamp())
+        }
+
+        Ok(trimmed_urls)
+    }
+
+    pub async fn list_post(
+        &self,
+        url: &str,
+        last_updated: i64,
+        strategy: Strategy,
+    ) -> Result<APIListCreatorPost> {
+        #[derive(Deserialize)]
+        struct ListResponse {
+            posts: APIListCreatorPost,
+        }
+
+        let posts = self
+            .fetch::<ListResponse>(&url)
+            .await
+            .map(|response| response.posts)?;
+
+        if matches!(strategy, Strategy::Full) {
+            return Ok(posts);
+        }
+
+        Ok(posts
+            .into_iter()
+            .filter(|post| post.published_datetime.timestamp() > last_updated)
+            .collect())
     }
 
     pub async fn get_post(&self, post_id: &str) -> Result<APIPost> {
@@ -252,7 +265,9 @@ impl FanboxClient {
             post: APIPost,
         }
 
-        self.fetch::<Response>(&url).await.map(|response| response.post)
+        self.fetch::<Response>(&url)
+            .await
+            .map(|response| response.post)
     }
 
     pub async fn get_post_comments(&self, id: &str, comment_count: u32) -> Result<APIPostComments> {
@@ -272,9 +287,44 @@ impl FanboxClient {
             };
 
             next_url = response.next_url;
-            comments.extend(response.items.into_iter());
+            comments.extend(response.items);
         }
         Ok(comments)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FanboxDownloader {
+    inner: ArchiveClient,
+    pb: ProgressBar,
+}
+
+impl FanboxDownloader {
+    pub fn new(pb: ProgressBar) -> Self {
+        Self {
+            inner: ArchiveClient::new(
+                Client::new(),
+                Limit {
+                    per_min: NonZeroU32::new(90).unwrap(),
+                    burst: NonZeroU32::new(4).unwrap(),
+                    ..Default::default()
+                },
+            ),
+            pb,
+        }
+    }
+
+    pub async fn download(&self, with_in: &Path, url: &str) -> Result<PathBuf> {
+        struct Guard<'a>(&'a ProgressBar);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.inc(1);
+            }
+        }
+
+        self.pb.inc_length(1);
+        let _guard = Guard(&self.pb);
+        Ok(self.inner.download(with_in, url).await?)
     }
 }
 

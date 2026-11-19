@@ -9,7 +9,8 @@ repository = "https://github.com/xiao-e-yun/FanboxArchive"
 
 
 [dependencies]
-post-archiver = { version = "0.5.3", features = ["importer"] }
+post-archiver = { path = "../../workspace/post-archiver", features = ["importer"] }
+post-archiver-utils = { path = "../../workspace/post-archiver-utils" }
 # other dependencies
 chrono = { version = "0.4.38", features = ["serde"] }
 rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }
@@ -24,7 +25,6 @@ tokio = { version = "1.38.0", features = ["full"] }
 futures = "0.3.31"
 reqwest = { version = "0.12", features = ["json", "stream", "native-tls-alpn"] }
 mime_guess = "2.0.5"
-post-archiver-utils = "0.1.1"
 indicatif = "0.18.0"
 indicatif-log-bridge = "0.2.3"
 plyne = "0.1.1"
@@ -32,3 +32,4 @@ dashmap = { version = "6.1.0", features = ["serde"] }
 itertools = "0.14.0"
 tempfile = "3.22.0"
 fake_user_agent = "=0.2.2"
+urlencoding = "2.1.3"

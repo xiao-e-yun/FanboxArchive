@@ -1,266 +1,195 @@
 mod body;
-pub mod file;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap, mem, path::{Path, PathBuf},
+};
 
 use crate::{
-    api::FanboxClient,
+    api::{FanboxClient, FanboxDownloader},
     config::ProgressSet,
     context::Context,
-    creator::sync_creator,
-    fanbox::{Comment, Post, PostListItem},
-    FileEvent, Manager, SyncEvent,
+    fanbox::Post,
+    Manager,
 };
-use file::FanboxFileMeta;
-use futures::try_join;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
+use mime_guess::{mime::IMAGE_JPEG, MimeGuess};
 use plyne::{Input, Output};
-use post_archiver::{
-    importer::{file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncCollection, UnsyncTag},
-    manager::{PostArchiverConnection, PostArchiverManager},
-    AuthorId, PlatformId,
+use post_archiver::importer::{
+    file_meta::UnsyncFileMeta, post::UnsyncPost, UnsyncAlias, UnsyncAuthor, UnsyncCollection,
+    UnsyncTag,
 };
-use post_archiver_utils::Result;
+use post_archiver_utils::{Result, TaskSet};
 use serde_json::json;
-use tempfile::TempPath;
-use tokio::{
-    fs::{create_dir_all, File, OpenOptions},
-    io, join,
-    sync::{oneshot, Mutex},
-    task::JoinSet,
-};
+use tempfile::{tempdir};
+use tokio::sync::Mutex;
 
-pub fn filter_unsynced_post(
-    manager: &PostArchiverManager<impl PostArchiverConnection>,
-    post: &PostListItem,
-) -> bool {
-    let source = get_source_link(&post.creator_id, &post.id);
-    manager
-        .find_post_with_updated(&source, &post.updated_datetime)
-        .expect("Failed to check post")
-        .is_none()
-}
-
-pub async fn get_posts(
-    posts_input: Input<Vec<PostListItem>>,
-    mut posts_pipeline: Output<Vec<PostListItem>>,
-    files_pipeline: Input<FileEvent>,
-    sync_piepline: Input<SyncEvent>,
-    client: &FanboxClient,
-    context: &Context,
-    pb: &ProgressSet,
+pub async fn posts(
+    mut posts_pipeline: Output<String>,
+    client: FanboxClient,
+    context: &Mutex<Context>,
+    manager: Manager,
+    progress: ProgressSet,
 ) {
-    let mut join_set = JoinSet::new();
+    let post_tasks = TaskSet::new("posts").limit(4);
+    let downloader = FanboxDownloader::new(progress.files.clone());
 
-    // check failed posts
-    check_failed_posts(posts_input, context, pb);
+    while let Some(post_id) = posts_pipeline.recv().await {
+        let progress = progress.clone();
+        let client = client.clone();
+        let downloader = downloader.clone();
+        let manager = manager.clone();
+        post_tasks
+            .spawn(async move {
+                let Ok(temp_dir) = tempdir() else {
+                    error!("Failed to create temporary directory for post {post_id}");
+                    return Err(post_id);
+                };
 
-    let failed_posts = Arc::new(Mutex::new(vec![]));
-    while let Some(posts) = posts_pipeline.recv().await {
-        for post in posts {
-            let posts_pb = pb.posts.clone();
-            let files_pb = pb.files.clone();
-            let client = client.clone();
-            let failed_posts = failed_posts.clone();
-            let files_pipeline = files_pipeline.clone();
-            let sync_piepline = sync_piepline.clone();
-            join_set.spawn(async move {
-                let result = join![
-                    client.get_post(&post.id),
-                    client.get_post_comments(&post.id, post.comment_count)
-                ];
-                debug!("Fetched post {}", post.id);
-
-                match result {
-                    (Ok(post), comments) => {
-                        let comments = comments.unwrap_or_else(|e| {
-                            error!("Failed to fetch comments for post {}: {}", post.id, e);
-                            vec![]
-                        });
-
-                        let (tx, rx) = oneshot::channel();
-                        let files = post
-                            .body
-                            .files()
-                            .into_iter()
-                            .map(|f| f.data)
-                            .chain(post.cover_image_url.clone())
-                            .collect::<Vec<_>>();
-
-                        files_pb.inc_length(files.len() as u64);
-                        files_pipeline.send((files, tx)).unwrap();
-                        sync_piepline.send((post, comments, rx)).unwrap();
+                let result = post(client, downloader, post_id.clone(), temp_dir.path()).await;
+                progress.posts.inc(1);
+                let post = match result {
+                    Ok(post) => {
+                        debug!("Post downloaded: {}", post.source);
+                        post
                     }
-                    (Err(e), _) => {
-                        error!("Failed to fetch post {}: {}", post.id, e);
-                        let mut failed_posts = failed_posts.lock().await;
-                        failed_posts.push(post);
+                    Err(e) => {
+                        error!("Failed to download post: {e}");
+                        return Err(post_id);
                     }
                 };
 
-                posts_pb.inc(1);
-            });
-        }
-    }
-
-    join_set.join_all().await;
-
-    update_failed_posts(context, failed_posts).await;
-
-    pb.posts.finish();
-}
-
-fn check_failed_posts(posts_input: Input<Vec<PostListItem>>, context: &Context, pb: &ProgressSet) {
-    debug!("Checking failed posts");
-    let failed_posts = context.failed_posts.borrow();
-    if failed_posts.is_empty() { return }
-    warn!("Retrying {} previously failed posts", failed_posts.len());
-    posts_input.send(failed_posts.clone()).unwrap();
-    pb.posts.inc_length(failed_posts.len() as u64);
-}
-
-async fn update_failed_posts(context: &Context, failed_posts: Arc<Mutex<Vec<PostListItem>>>) {
-    debug!("Recording failed posts");
-    let updated_failed_posts = Arc::into_inner(failed_posts).unwrap().into_inner();
-    if !updated_failed_posts.is_empty() {
-        error!("{} posts failed to download", updated_failed_posts.len());
-    }
-    *context.failed_posts.borrow_mut() = updated_failed_posts;
-}
-
-pub async fn sync_posts(mut sync_piepline: Output<SyncEvent>, manager: &Manager) {
-    let mut authors = HashMap::new();
-    'post: while let Some((post, comments, rx)) = sync_piepline.recv().await {
-        let mut manager = manager.lock().await;
-
-        let fanbox_platform = manager.import_platform("fanbox".to_string()).unwrap();
-        let pixiv_platform = manager.import_platform("pixiv".to_string()).unwrap();
-
-        let tx = manager.transaction().unwrap();
-
-        let Ok(author) = sync_creator(&tx, &mut authors, [fanbox_platform, pixiv_platform], &post)
-        else {
-            error!("Failed to sync creator for post: {}", post.id);
-            continue;
-        };
-
-        let post = conversion_post(fanbox_platform, author, post, comments);
-        let source = post.source.clone();
-
-        let Ok((_, _, _, files)) = tx.import_post(post, true) else {
-            error!("Failed to import post: {source}");
-            continue;
-        };
-
-        let Ok(mut file_map) = rx.await else {
-            error!("Failed to receive file map for post: {source}");
-            continue;
-        };
-
-        let mut create_dir = true;
-        for (path, url) in files {
-            if let Err(e) = save_file(&mut file_map, &path, &url, create_dir).await {
-                error!("Failed to save file {}: {}", path.display(), e);
-                error!("Aborting post import due to file errors: {source}");
-                continue 'post;
-            };
-            create_dir = false;
-        }
-
-        info!("Post imported: {source}");
-        tx.commit().unwrap();
-    }
-
-    fn conversion_post(
-        platform: PlatformId,
-        author: AuthorId,
-        post: Post,
-        comments: Vec<Comment>,
-    ) -> UnsyncPost<String> {
-        let source = get_source_link(&post.creator_id, &post.id);
-
-        let mut tags = vec![];
-        if post.fee_required == 0 {
-            tags.push("free".to_string());
-        }
-        if post.has_adult_content {
-            tags.push("r-18".to_string());
-        }
-        let tags = tags
-            .into_iter()
-            .map(|tag| UnsyncTag {
-                name: tag,
-                platform: None,
+                let mut manager = manager.lock().await;
+                let source = post.source.clone();
+                if let Err(e) = manager.importer().import_post(post) {
+                    error!("Failed to import post: {source}\n{e}");
+                    return Err(post_id);
+                }
+                info!("Post imported: {source}");
+                Ok(())
             })
-            .collect::<Vec<_>>();
+            .await;
+    }
 
-        let collections = post
-            .tags
-            .into_iter()
-            .map(|tag| {
-                UnsyncCollection::new(
-                    tag.clone(),
-                    format!("https://{}.fanbox.cc/tags/{}", post.creator_id, tag),
-                )
-            })
-            .collect();
+    let results = post_tasks.join_all().await;
+    progress.posts.finish();
+    progress.files.finish();
 
-        let thumb = post.cover_image_url.clone().map(|url| {
-            let mut meta = UnsyncFileMeta::from_url(url);
-            meta.extra = HashMap::from([
-                ("width".to_string(), json!(1200)),
-                ("height".to_string(), json!(630)),
-            ]);
-            meta
-        });
+    context.lock().await.failed_posts = results.into_iter().flat_map(|r| r.err()).collect();
+}
 
-        let content = post.body.content();
+async fn post(
+    client: FanboxClient,
+    downloader: FanboxDownloader,
+    post_id: String,
+    with_in: &Path,
+) -> Result<UnsyncPost> {
+    let post = client.get_post(&post_id).await?;
+    debug!("Fetched post {}", post.id);
 
-        let comments = comments.into_iter().map(|c| c.into()).collect();
+    let comments = client
+        .get_post_comments(&post_id, post.comment_count)
+        .await
+        .inspect_err(|e| error!("Failed to fetch comments for post {post_id}: {e}"))
+        .unwrap_or_default();
 
-        UnsyncPost::new(platform, source, post.title, content)
+    let thumb = download_cover(&post, with_in, &downloader).await?;
+    let content = post.body.content(with_in, &downloader).await?;
+
+    let source = get_source_link(&post.creator_id, &post.id);
+
+    let tags = collect_tags(&post);
+    let authors = collect_authors(&post);
+    let collections = collect_collections(&post);
+
+    let comments = comments.into_iter().map(|c| c.into()).collect();
+
+    Ok(
+        UnsyncPost::new("fanbox".to_string(), source, post.title, content)
             .thumb(thumb)
-            .comments(comments)
-            .collections(collections)
-            .authors(vec![author])
-            .published(post.published_datetime)
             .updated(post.updated_datetime)
+            .published(post.published_datetime)
             .tags(tags)
+            .authors(authors)
+            .collections(collections)
+            .comments(comments),
+    )
+}
+
+async fn download_cover(
+    post: &Post,
+    with_in: &Path,
+    downloader: &FanboxDownloader,
+) -> Result<Option<UnsyncFileMeta>> {
+    let Some(url) = &post.cover_image_url else {
+        return Ok(None);
+    };
+
+    let path = downloader.download(with_in, url).await?;
+    let filename = url.split('/').next_back().unwrap().to_string();
+    let mime = MimeGuess::from_path(&filename)
+        .first_or(IMAGE_JPEG)
+        .to_string();
+    let extra = HashMap::from([
+        ("width".to_string(), json!(1200)),
+        ("height".to_string(), json!(630)),
+    ]);
+    Ok(Some(UnsyncFileMeta::new(filename, mime, path).extra(extra)))
+}
+
+fn collect_tags(post: &Post) -> Vec<UnsyncTag> {
+    let mut tags = vec![];
+    if post.fee_required == 0 {
+        tags.push(UnsyncTag {
+            name: "free".to_string(),
+            platform: None,
+        })
     }
 
-    async fn save_file(
-        file_map: &mut HashMap<String, TempPath>,
-        path: &PathBuf,
-        url: &str,
-        create_dir: bool,
-    ) -> Result<()> {
-        if create_dir {
-            let path = path.parent().unwrap();
-            create_dir_all(path).await?;
-        }
+    if post.has_adult_content {
+        tags.push(UnsyncTag {
+            name: "r-18".to_string(),
+            platform: None,
+        })
+    }
 
-        let temp = file_map.remove(url).ok_or(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("File not found in map: {url}"),
-        ))?;
+    tags
+}
 
-        let mut open_options = OpenOptions::new();
-        let (mut src, mut dst) = try_join!(
-            File::open(&temp),
-            open_options
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&path)
-        )?;
+fn collect_collections(post: &Post) -> Vec<UnsyncCollection> {
+    let mut collections = Vec::with_capacity(post.tags.len());
+    for tag in &post.tags {
+        let encoded = urlencoding::encode(tag);
+        collections.push(UnsyncCollection::new(
+            tag.clone(),
+            format!("https://{}.fanbox.cc/tags/{encoded}", post.creator_id),
+        ));
+    }
+    collections
+}
 
-        io::copy(&mut src, &mut dst).await?;
-        trace!("File saved: {url} -> {}", path.display());
+fn collect_authors(post: &Post) -> Vec<UnsyncAuthor> {
+    vec![UnsyncAuthor::new(post.user.name.to_string()).aliases(vec![
+        UnsyncAlias::new("fanbox".to_string(), post.creator_id.clone())
+            .link(format!("https://{}.fanbox.cc/", post.creator_id.clone())),
+        UnsyncAlias::new("pixiv".to_string(), post.user.user_id.clone()).link(format!(
+            "https://www.pixiv.net/users/{}",
+            post.user.user_id.clone()
+        )),
+    ])]
+}
 
-        Ok(())
+pub async fn failed_posts(posts_input: Input<String>, context: &Mutex<Context>, progress: &ProgressSet) {
+    let failed_posts = &mut context.lock().await.failed_posts;
+    if failed_posts.is_empty() {
+        return;
+    }
+    warn!("Retrying {} previously failed posts", failed_posts.len());
+    progress.posts.inc_length(failed_posts.len() as u64);
+    for post in mem::take(failed_posts) {
+        posts_input.send(post).unwrap();
     }
 }
 
-pub fn get_source_link(creator_id: &str, post_id: &str) -> String {
-    format!("https://{creator_id}.fanbox.cc/posts/{post_id}")
+pub fn get_source_link(creator: &str, post: &str) -> String {
+    format!("https://{creator}.fanbox.cc/posts/{post}")
 }

@@ -1,14 +1,20 @@
-use std::{cell::RefCell, collections::HashMap, fs::read_to_string, path::Path};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fs::read_to_string,
+    mem,
+    path::Path,
+};
 
-use dashmap::{mapref::one::RefMut, DashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::fanbox::PostListItem;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
-    pub creators: DashMap<String, CachedCreator>,
-    pub failed_posts: RefCell<Vec<PostListItem>>,
+    /// user_id: CachedCreator
+    pub creators: HashMap<String, CachedCreator>,
+    pub failed_posts: Vec<String>,
 }
 
 impl Context {
@@ -27,45 +33,45 @@ impl Context {
         std::fs::write(path, json).expect("Failed to save context");
     }
 
-    pub fn get_creator_mut(
-        &self,
-        user_id: &str,
-        creator_id: &str,
-    ) -> RefMut<'_, String, CachedCreator> {
+    pub fn get_creator(&self, user_id: &str, creator_id: &str) -> CachedCreator {
         self.creators
-            .entry(user_id.to_string())
-            .and_modify(|creator| {
-                if creator.creator_id != creator_id {
-                    creator.old_creator_id = Some(creator.creator_id.clone());
-                    creator.creator_id = creator_id.to_string();
-                }
-            })
-            .or_insert_with(|| CachedCreator {
+            .get(user_id)
+            .cloned()
+            .unwrap_or(CachedCreator {
+                last_updated: 0,
                 creator_id: creator_id.to_string(),
-                support_records: HashMap::new(),
-                old_creator_id: None,
+                unimports: HashMap::new(),
             })
+    }
+
+    pub fn creator(&mut self, user_id: &str) -> Option<CachedCreator> {
+        self.creators.remove(user_id)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CachedCreator {
+    pub last_updated: i64,
     pub creator_id: String,
-    /// fee: updated
-    pub support_records: HashMap<u32, i64>,
-    #[serde(skip)]
-    pub old_creator_id: Option<String>,
+    /// fee: unimported post.
+    pub unimports: HashMap<u32, HashSet<String>>,
 }
 
 impl CachedCreator {
-    pub fn last_updated(&self, fee: u32) -> Option<i64> {
-        // Find the maximum updated timestamp for all fees that are greater than or equal to the given fee.
-        self.support_records
-            .iter()
-            .filter_map(|(f, u)| if *f >= fee { Some(*u) } else { None })
-            .max()
+    pub fn take_unimported_posts(&mut self, fee: u32) -> Vec<String> {
+        let mut posts = vec![];
+        for (f, unimporteds) in self.unimports.iter_mut() {
+            if *f > fee {
+                posts.extend(mem::take(unimporteds));
+            }
+        }
+        posts
     }
-    pub fn update(&mut self, updated: i64, fee: u32) {
-        self.support_records.insert(fee, updated);
+
+    pub fn push_unimport(&mut self, fee: u32, post_id: String) {
+        self.unimports
+            .entry(fee)
+            .or_insert_with(HashSet::new)
+            .insert(post_id);
     }
 }

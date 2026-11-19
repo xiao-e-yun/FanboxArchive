@@ -1,28 +1,31 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
+use futures::future::try_join_all;
 use log::error;
 use post_archiver::importer::{file_meta::UnsyncFileMeta, post::UnsyncContent};
+use post_archiver_utils::{Error, Result};
+use serde_json::json;
+use tokio::try_join;
 
 use crate::{
+    api::FanboxDownloader,
     fanbox::{PostBlock, PostBlockStyle, PostBody, PostEmbed, PostTextEmbed, PostVideo},
     post::get_source_link,
 };
 
-use super::file::FanboxFileMeta;
-
 impl PostBody {
-    pub fn content(&self) -> Vec<UnsyncContent<String>> {
-        let mut content = self.text();
+    pub async fn content(
+        &self,
+        with_in: &Path,
+        client: &FanboxDownloader,
+    ) -> Result<Vec<UnsyncContent>> {
+        let ((images, files), unordereds) = try_join![
+            self.inline_files(with_in, client),
+            self.unordered_files(with_in, client)
+        ]?;
 
-        for image in self.images.clone().unwrap_or_default() {
-            let file = UnsyncFileMeta::from_image(image);
-            content.push(UnsyncContent::File(file));
-        }
-
-        for file in self.files.clone().unwrap_or_default() {
-            let file = UnsyncFileMeta::from_file(file);
-            content.push(UnsyncContent::File(file));
-        }
+        let mut content = self.text(&images, &files);
+        content.extend(unordereds.into_iter().map(UnsyncContent::File));
 
         for video in self.videos.iter().flatten() {
             content.push(UnsyncContent::Text(video.to_text()));
@@ -32,10 +35,14 @@ impl PostBody {
             content.push(UnsyncContent::Text(video.to_text()));
         }
 
-        content
+        Ok(content)
     }
 
-    pub fn text(&self) -> Vec<UnsyncContent<String>> {
+    pub fn text(
+        &self,
+        images: &HashMap<String, UnsyncFileMeta>,
+        files: &HashMap<String, UnsyncFileMeta>,
+    ) -> Vec<UnsyncContent> {
         let mut content = vec![];
         if let Some(text) = self.text.clone() {
             let text = text.replace("\n", "  \n");
@@ -46,16 +53,82 @@ impl PostBody {
 
         if let Some(blocks) = self.blocks.as_ref() {
             for block in blocks.clone() {
-                content.push(block.to_text(self));
+                content.push(block.to_text(self, images, files));
             }
         }
 
         content
     }
+
+    async fn inline_files(
+        &self,
+        with_in: &Path,
+        client: &FanboxDownloader,
+    ) -> Result<(
+        HashMap<String, UnsyncFileMeta>,
+        HashMap<String, UnsyncFileMeta>,
+    )> {
+        let images = self.image_map.iter().flatten().map(|(id, image)| async {
+            let filename = image.filename();
+            let mime = image.mime();
+            let extra = HashMap::from([
+                ("width".to_string(), json!(image.width)),
+                ("height".to_string(), json!(image.height)),
+            ]);
+            let source = client.download(with_in, &image.original_url).await?;
+            Ok::<(String, UnsyncFileMeta), Error>((
+                id.clone(),
+                UnsyncFileMeta::new(filename, mime, source).extra(extra),
+            ))
+        });
+
+        let files = self.file_map.iter().flatten().map(|(id, file)| async {
+            let filename = file.filename();
+            let mime = file.mime();
+            let source = client.download(with_in, &file.url).await?;
+            Ok((id.clone(), UnsyncFileMeta::new(filename, mime, source)))
+        });
+
+        let (images, files) = try_join!(try_join_all(images), try_join_all(files))?;
+        Ok((images.into_iter().collect(), files.into_iter().collect()))
+    }
+
+    async fn unordered_files(
+        &self,
+        with_in: &Path,
+        client: &FanboxDownloader,
+    ) -> Result<Vec<UnsyncFileMeta>> {
+        let images = self.images.iter().flatten().map(|image| async {
+            let filename = image.filename();
+            let mime = image.mime();
+            let extra = HashMap::from([
+                ("width".to_string(), json!(image.width)),
+                ("height".to_string(), json!(image.height)),
+            ]);
+            let source = client.download(with_in, &image.original_url).await?;
+            Ok::<UnsyncFileMeta, Error>(UnsyncFileMeta::new(filename, mime, source).extra(extra))
+        });
+
+        let files = self.files.iter().flatten().map(|file| async {
+            let filename = file.filename();
+            let mime = file.mime();
+            let source = client.download(with_in, &file.url).await?;
+            Ok(UnsyncFileMeta::new(filename, mime, source))
+        });
+
+        let (mut images, files) = try_join!(try_join_all(images), try_join_all(files))?;
+        images.extend(files);
+        Ok(images)
+    }
 }
 
 impl PostBlock {
-    pub fn to_text(self, body: &PostBody) -> UnsyncContent<String> {
+    pub fn to_text(
+        self,
+        body: &PostBody,
+        images: &HashMap<String, UnsyncFileMeta>,
+        files: &HashMap<String, UnsyncFileMeta>,
+    ) -> UnsyncContent {
         match self {
             PostBlock::P { text, styles } => {
                 if text.is_empty() {
@@ -67,22 +140,14 @@ impl PostBlock {
             PostBlock::Header { text, styles } => {
                 UnsyncContent::Text(format!("# {}", Self::style_text(text, styles)))
             }
-            PostBlock::Image { image_id } => {
-                let images = body.image_map.as_ref().unwrap();
-                let Some(image) = images.get(&image_id) else {
-                    return UnsyncContent::Text(format!("[Image Mismatch: {image_id}]"));
-                };
-                let file = UnsyncFileMeta::from_image(image.clone());
-                UnsyncContent::File(file)
-            }
-            PostBlock::File { file_id } => {
-                let files = body.file_map.as_ref().unwrap();
-                let Some(file) = files.get(&file_id) else {
-                    return UnsyncContent::Text(format!("[File Mismatch: {file_id}]"));
-                };
-                let file = UnsyncFileMeta::from_file(file.clone());
-                UnsyncContent::File(file)
-            }
+            PostBlock::Image { image_id } => match images.get(&image_id) {
+                Some(image) => UnsyncContent::File(image.clone()),
+                None => UnsyncContent::Text(format!("[Image Mismatch: {image_id}]")),
+            },
+            PostBlock::File { file_id } => match files.get(&file_id) {
+                Some(file) => UnsyncContent::File(file.clone()),
+                None => UnsyncContent::Text(format!("[File Mismatch: {file_id}]")),
+            },
             PostBlock::Embed { embed_id } => {
                 let Some(embed) = body.embed_map.as_ref().unwrap().get(&embed_id) else {
                     return UnsyncContent::Text(format!("[Embed not found: {embed_id}]"));
@@ -110,7 +175,7 @@ impl PostBlock {
         };
 
         let mut insert_map: HashMap<usize, String> = HashMap::new();
-        styles.sort_by(|a, b| a.offset.cmp(&b.offset));
+        styles.sort_by_key(|a| a.offset);
         while let Some(style) = styles.pop() {
             let offset = style.offset as usize;
             let length = style.length as usize;
@@ -118,7 +183,7 @@ impl PostBlock {
                 "bold" => ("**", "**"),
                 _ => {
                     error!("Unknown style: {style:?}");
-                    unimplemented!()
+                    ("", "")
                 }
             };
             let prefix_entry = insert_map.entry(offset).or_default();
@@ -148,7 +213,7 @@ impl PostVideo {
             _ => {
                 error!("Unknown video provider ({})", self.service_provider);
                 error!("video_id: {}", self.video_id);
-                unimplemented!()
+                format!("{}'s video: {}", self.service_provider, self.video_id)
             }
         }
     }
@@ -167,7 +232,7 @@ impl PostEmbed {
                 )
             }
             "fanbox" => {
-                fn deconstruct(input: &str) -> Result<(String, String), &'static str> {
+                fn deconstruct(input: &str) -> std::result::Result<(String, String), &'static str> {
                     let parts: Vec<&str> = input.split('/').collect();
                     if parts.len() == 4 && parts[0] == "creator" && parts[2] == "post" {
                         let creator = parts[1].to_string();
@@ -196,7 +261,7 @@ impl PostEmbed {
                 error!("Unknown embed provider ({provider})");
                 error!("id: {}", self.id);
                 error!("content_id: {}", self.content_id);
-                unimplemented!()
+                format!("{}'s embed: {}", provider, self.content_id)
             }
         }
     }

@@ -1,18 +1,18 @@
 pub mod save_type;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
 use fake_user_agent::get_rua;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
+use post_archiver_utils::{define_progress, Strategy};
 use save_type::SaveType;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ops::Deref, path::PathBuf};
+use std::{collections::HashMap, num::NonZeroU32, path::PathBuf};
 
 use crate::fanbox::{Creator, PostListItem};
 
-#[derive(Debug, Clone, Parser, Default)]
+#[derive(Debug, Clone, Parser)]
 pub struct Config {
     /// Your `FANBOXSESSID` cookie
     #[clap(env = "FANBOXSESSID")]
@@ -24,7 +24,7 @@ pub struct Config {
     #[arg(short, long, default_value = "supporting", env = "SAVE")]
     save: SaveType,
     /// Archiving strategy
-    #[arg(long, default_value = "increment")]
+    #[arg(long, default_value_t)]
     strategy: Strategy,
     /// Whitelist of creator IDs
     #[arg(short, long, num_args = 0..)]
@@ -34,7 +34,7 @@ pub struct Config {
     blacklist: Vec<String>,
     /// Limit fetch number of posts per minute
     #[arg(long, default_value = "60")]
-    limit: u32,
+    limit: NonZeroU32,
     /// Skip free post
     #[arg(long, name = "skip-free")]
     skip_free: bool,
@@ -99,7 +99,9 @@ impl Config {
     }
     /// Get the user agent for blocking
     pub fn user_agent(&self) -> String {
-        self.user_agent.clone().unwrap_or_else(|| get_rua().to_string()) // NOTE get rua never choose IE 
+        self.user_agent
+            .clone()
+            .unwrap_or_else(|| get_rua().to_string()) // NOTE get rua never choose IE
     }
     pub fn accepts(&self) -> SaveType {
         self.save
@@ -119,7 +121,7 @@ impl Config {
     pub fn output(&self) -> &PathBuf {
         &self.output
     }
-    pub fn limit(&self) -> u32 {
+    pub fn limit(&self) -> NonZeroU32 {
         self.limit
     }
 
@@ -148,72 +150,10 @@ impl Config {
     pub fn strategy(&self) -> Strategy {
         self.strategy
     }
-
-    pub fn progress(&self, prefix: &'static str) -> Progress {
-        Progress::new(&self.multi, prefix)
-    }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, ValueEnum, PartialEq, Eq, Default)]
-pub enum Strategy {
-    #[default]
-    Increment,
-    Full,
-    Force,
-}
-
-impl Strategy {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Strategy::Increment => "increment",
-            Strategy::Full => "full",
-            Strategy::Force => "force",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Progress(ProgressBar);
-
-impl Progress {
-    pub fn new(multi: &MultiProgress, prefix: &'static str) -> Self {
-        Self(
-            multi.add(
-                ProgressBar::new(0)
-                    .with_style(Self::style())
-                    .with_prefix(format!("[{prefix}]")),
-            ),
-        )
-    }
-
-    fn style() -> ProgressStyle {
-        ProgressStyle::with_template("{prefix:.bold.dim} {wide_bar:.cyan/blue} {pos:>3}/{len:3}")
-            .unwrap()
-            .progress_chars("#>-")
-    }
-}
-
-impl Deref for Progress {
-    type Target = ProgressBar;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ProgressSet {
-    pub authors: Progress,
-    pub posts: Progress,
-    pub files: Progress,
-}
-
-impl ProgressSet {
-    pub fn new(config: &Config) -> Self {
-        Self {
-            authors: config.progress("authors"),
-            posts: config.progress("posts"),
-            files: config.progress("files"),
-        }
-    }
-}
+define_progress!(ProgressSet [
+    creators,
+    posts,
+    files
+]);

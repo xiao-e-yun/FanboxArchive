@@ -1,30 +1,25 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use futures::join;
 use log::{error, info, warn};
 use plyne::{Input, Output};
-use post_archiver::{
-    importer::{UnsyncAlias, UnsyncAuthor},
-    manager::PostArchiverManager,
-    AuthorId, PlatformId,
-};
-use post_archiver_utils::Result;
-use rusqlite::Transaction;
+use post_archiver_utils::{Result, TaskSet};
+use rusqlite::params;
+use tokio::sync::Mutex;
 
 use crate::{
     api::FanboxClient,
-    config::{Config, ProgressSet, Strategy},
+    config::{Config, ProgressSet},
     context::{CachedCreator, Context},
-    fanbox::{Creator, Post, PostListItem, User},
-    post::filter_unsynced_post,
+    fanbox::Creator,
     Manager,
 };
 
-pub async fn get_creators(
+pub async fn creators(
     config: &Config,
     client: &FanboxClient,
+    progress: &ProgressSet,
     creator_pipeline: Input<Creator>,
-    pb: &ProgressSet,
 ) {
     let accepts = config.accepts();
     info!("Accepts:");
@@ -41,25 +36,35 @@ pub async fn get_creators(
             if !accepts.accept_following() {
                 return vec![];
             }
-            let list = client
-                .get_following_creators()
-                .await
-                .inspect_err(|e| warn!("Failed to get following creators: {e}"))
-                .unwrap_or_default();
-            info!(" + Following: {} found", list.len());
-            list
+            info!("Fetching following creators");
+            match client.get_following_creators().await {
+                Ok(list) => {
+                    info!("Found {} following creators", list.len());
+                    progress.creators.inc_length(list.len() as u64);
+                    list
+                }
+                Err(e) => {
+                    error!("Failed to get following creators: {e}");
+                    vec![]
+                }
+            }
         },
         async {
             if !accepts.accept_supporting() {
                 return vec![];
             }
-            let list = client
-                .get_supporting_creators()
-                .await
-                .inspect_err(|e| warn!("Failed to get supporting creators: {e}"))
-                .unwrap_or_default();
-            info!(" + Supporting: {} found", list.len());
-            list
+            info!("Fetching supporting creators");
+            match client.get_supporting_creators().await {
+                Ok(list) => {
+                    info!("Found {} supporting creators", list.len());
+                    progress.creators.inc_length(list.len() as u64);
+                    list
+                }
+                Err(e) => {
+                    error!("Failed to get supporting creators: {e}");
+                    vec![]
+                }
+            }
         }
     );
     creators.extend(following.into_iter().map(|c| c.into()));
@@ -76,170 +81,158 @@ pub async fn get_creators(
     info!("");
 
     display_creators(&creators);
-    pb.authors.inc_length(total as u64);
 
     for creator in creators {
         creator_pipeline.send(creator).unwrap();
     }
 }
 
-pub async fn get_creator_posts(
+pub async fn creator_posts(
     mut creator_pipeline: Output<Creator>,
-    posts_pipeline: Input<Vec<PostListItem>>,
-    context: &Context,
+    posts_pipeline: Input<String>,
+    context: &Mutex<Context>,
     manager: &Manager,
     config: &Config,
     client: &FanboxClient,
-    pb: &ProgressSet,
+    progress: &ProgressSet,
 ) {
+    let tasks: TaskSet<(String, CachedCreator), post_archiver_utils::error::Error> =
+        TaskSet::new("creators").limit(2);
+
     while let Some(creator) = creator_pipeline.recv().await {
-        let mut creator_record = context.get_creator_mut(&creator.user_id, &creator.creator_id);
+        let mut cached = context
+            .lock()
+            .await
+            .get_creator(&creator.user_id, &creator.creator_id);
 
-        if let Some(old_creator_id) = &creator_record.old_creator_id {
-            info!(
-                "Creator ID changed: {} -> {}",
-                old_creator_id, creator.creator_id
+        if creator.creator_id != cached.creator_id {
+            warn!(
+                "Creator ID has changed: {} -> {}",
+                cached.creator_id, creator.creator_id
             );
-
-            let mut manager = manager.lock().await;
-            match patch_creator_source(&mut manager, &creator_record) {
-                Ok(cols) => info!("Patched {} posts for creator {}", cols, creator.creator_id),
-                Err(e) => error!(
-                    "Failed to patch posts for creator {}: {}",
-                    creator.creator_id, e
-                ),
-            }
+            let _ = patch_creator_source(manager, &cached, &creator)
+                .await
+                .inspect_err(|e| error!("Failed to update creator source: {}", e));
+            cached.creator_id = creator.creator_id.clone();
         }
 
-        let last_updated = creator_record
-            .last_updated(creator.fee)
-            .filter(|_| config.strategy() == Strategy::Increment);
+        let unimported_posts = cached.take_unimported_posts(creator.fee);
+        progress.posts.inc_length(unimported_posts.len() as u64);
+        for post in unimported_posts {
+            posts_pipeline.send(post).unwrap();
+        }
 
-        let Ok((posts, last_date)) = client.get_posts(&creator.creator_id, last_updated).await
-        else {
-            error!("Failed to get posts for creator: {}", creator.creator_id);
-            continue;
-        };
+        let pb = progress.creators.clone();
+        let post_pb = progress.posts.clone();
+        let client = client.clone();
+        let config = config.clone();
+        let posts_pipeline = posts_pipeline.clone();
+        tasks
+            .spawn(async move {
+                let urls = client
+                    .list_post_paninate(&cached, config.strategy())
+                    .await
+                    .inspect_err(|e| error!("failed to fetch creator pagination: {e}"))?;
 
-        creator_record.update(last_date, creator.fee);
+                for url in urls {
+                    let posts = client
+                        .list_post(&url, cached.last_updated, config.strategy())
+                        .await
+                        .inspect_err(|e| error!("failed to list creator posts: {e}"))?;
 
-        let manager = manager.lock().await;
-        let posts = posts
-            .into_iter()
-            .filter(|post| config.filter_post(post))
-            .filter(|post| {
-                config.strategy() == Strategy::Force || filter_unsynced_post(&manager, post)
+                    let mut count = 0;
+                    for post in posts {
+                        cached.last_updated =
+                            cached.last_updated.max(post.published_datetime.timestamp());
+
+                        if creator.fee < post.fee_required {
+                            cached.push_unimport(post.fee_required, post.id);
+                            continue;
+                        }
+
+                        if !config.filter_post(&post) {
+                            continue;
+                        }
+
+                        posts_pipeline.send(post.id).unwrap();
+                        count += 1;
+                    }
+                    post_pb.inc_length(count);
+                }
+
+                pb.inc(1);
+                Ok((creator.user_id.clone(), cached))
             })
-            .collect::<Vec<_>>();
-
-        info!("Found {} posts ({})", posts.len(), creator.creator_id);
-        pb.posts.inc_length(posts.len() as u64);
-        posts_pipeline.send(posts).unwrap();
-        pb.authors.inc(1);
+            .await;
     }
 
-    pb.authors.finish();
+    let mut context = context.lock().await;
+    for (id, cached) in tasks.join_all().await.into_iter().flatten() {
+        context.creators.insert(id, cached);
+    }
+    progress.creators.finish();
 }
 
-pub fn patch_creator_source(
-    manager: &mut PostArchiverManager,
-    creator: &CachedCreator,
+async fn patch_creator_source(
+    manager: &Manager,
+    cached: &CachedCreator,
+    creator: &Creator,
 ) -> Result<usize> {
-    let fanbox_platform = manager.import_platform("fanbox".to_string())?;
+    let mut manager = manager.lock().await;
+    let mut importer = manager.importer();
+    let importer = importer.savepoint().unwrap();
 
-    let tx = manager.transaction().unwrap();
-    let conn = tx.conn();
+    let fanbox_platform = importer.import_platform("fanbox".to_string())?;
 
-    // update author alias
-    let stmt = "UPDATE author_aliases SET source = ?1, link = 'https://' || ?1 || '.fanbox.cc/' WHERE platform = ?2 AND source = ?3";
-
-    conn.execute(
-        stmt,
-        rusqlite::params![
-            creator.creator_id,
-            fanbox_platform,
-            creator.old_creator_id.as_ref().unwrap()
-        ],
-    )?;
+    // update creator alias
+    let mut stmt = importer.conn.prepare("UPDATE author_aliases SET source = ?1, link = 'https://' || ?1 || '.fanbox.cc/' WHERE platform = ?2 AND source = ?3").unwrap();
+    stmt.execute(params![
+        creator.creator_id,
+        fanbox_platform,
+        cached.creator_id
+    ])?;
+    drop(stmt);
 
     // update posts
-    let stmt =
-        "UPDATE posts SET source = replace(source, ?1, ?2) WHERE platform = ?3 AND source LIKE ?1 || '%'";
-    let format_source = |creator_id: &str| format!("https://{creator_id}.fanbox.cc/posts/");
+    let mut stmt = importer.conn.prepare("UPDATE posts SET source = replace(source, ?1, ?2) WHERE platform = ?3 AND source LIKE ?1 || '%'").unwrap();
 
-    let old_source = format_source(creator.old_creator_id.as_ref().unwrap());
-    let new_source = format_source(&creator.creator_id);
+    let old_source = format!("https://{}.fanbox.cc/posts/", cached.creator_id);
+    let new_source = format!("https://{}.fanbox.cc/posts/", creator.creator_id);
 
-    let cols = conn.execute(
-        stmt,
-        rusqlite::params![old_source, new_source, fanbox_platform],
-    )?;
+    let cols = stmt.execute(params![old_source, new_source, fanbox_platform])?;
+    drop(stmt);
 
-    tx.commit()?;
+    importer.commit()?;
     Ok(cols)
 }
 
 pub fn display_creators(creators: &HashSet<Creator>) {
-    if log::log_enabled!(log::Level::Info) {
-        let mut creators = creators.iter().collect::<Vec<_>>();
-        creators.sort_by(|a, b| a.creator_id.cmp(&b.creator_id));
+    if !log::log_enabled!(log::Level::Info) {
+        return;
+    }
 
-        let (mut id_width, mut fee_width) = (11_usize, 5_usize);
-        for creator in creators.iter() {
-            id_width = creator.creator_id.len().max(id_width);
-            fee_width = creator.fee.to_string().len().max(fee_width);
-        }
+    let mut creators = creators.iter().collect::<Vec<_>>();
+    creators.sort_by(|a, b| a.creator_id.cmp(&b.creator_id));
 
+    let (mut id_width, mut fee_width) = (11_usize, 5_usize);
+    for creator in creators.iter() {
+        id_width = creator.creator_id.len().max(id_width);
+        fee_width = creator.fee.to_string().len().max(fee_width);
+    }
+
+    info!(
+        "+-{:-<id_width$}-+-{:-<fee_width$}--+-{}------- - -",
+        " CreatorId ", " Fee ", " Name "
+    );
+    for creator in creators.iter() {
         info!(
-            "+-{:-<id_width$}-+-{:-<fee_width$}--+-{}------- - -",
-            " CreatorId ", " Fee ", " Name "
+            "| {:id_width$} | {:fee_width$}$ | {}",
+            creator.creator_id, creator.fee, creator.name
         );
-        for creator in creators.iter() {
-            info!(
-                "| {:id_width$} | {:fee_width$}$ | {}",
-                creator.creator_id, creator.fee, creator.name
-            );
-        }
-        info!(
-            "+-{}-+-{}--+-------------- - -",
-            "-".to_string().repeat(id_width),
-            "-".to_string().repeat(fee_width)
-        );
-        info!("");
     }
-}
-
-pub fn sync_creator(
-    manager: &PostArchiverManager<Transaction<'_>>,
-    authors: &mut HashMap<String, AuthorId>,
-    platforms: [PlatformId; 2],
-    post: &Post,
-) -> Result<AuthorId> {
-    let creator_id = post.creator_id.clone();
-    if let Some(author) = authors.get(&creator_id) {
-        return Ok(*author);
-    }
-
-    let [fanbox_platform, pixiv_platform] = platforms;
-    let User { name, user_id, .. } = &post.user;
-
-    match UnsyncAuthor::new(name.to_string())
-        .aliases(vec![
-            UnsyncAlias::new(fanbox_platform, creator_id.clone())
-                .link(format!("https://{creator_id}.fanbox.cc/")),
-            UnsyncAlias::new(pixiv_platform, user_id.clone())
-                .link(format!("https://www.pixiv.net/users/{user_id}")),
-        ])
-        .sync(manager)
-    {
-        Ok(author) => {
-            info!("Synced author: {creator_id} ({name})");
-            authors.insert(creator_id, author);
-            Ok(author)
-        }
-        Err(e) => {
-            error!("Failed to sync author: {creator_id} ({name}): {e}");
-            Result::Err(e.into())
-        }
-    }
+    info!(
+        "+-{}-+-{}--+-------------- - -",
+        "-".to_string().repeat(id_width),
+        "-".to_string().repeat(fee_width)
+    );
 }
