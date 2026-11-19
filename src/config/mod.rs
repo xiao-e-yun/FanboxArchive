@@ -99,9 +99,13 @@ impl Config {
     }
     /// Get the user agent for blocking
     pub fn user_agent(&self) -> String {
-        self.user_agent
-            .clone()
-            .unwrap_or_else(|| get_rua().to_string()) // NOTE get rua never choose IE
+        self.user_agent.clone().unwrap_or_else(|| loop {
+            // `get_rua` can return Internet Explorer, which Fanbox rejects with a 403 page.
+            let ua = get_rua();
+            if !ua.contains("MSIE") && !ua.contains("Trident/") {
+                break ua.to_string();
+            }
+        })
     }
     pub fn accepts(&self) -> SaveType {
         self.save
