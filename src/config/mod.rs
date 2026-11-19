@@ -17,8 +17,8 @@ pub struct Config {
     /// Your `FANBOXSESSID` cookie
     #[clap(env = "FANBOXSESSID", hide_env_values = true)]
     session: String,
-    /// Which you path want to save
-    #[arg(default_value = "./archive", env = "OUTPUT")]
+    /// Archive directory to save into
+    #[arg(short, long, default_value = "./archive", env = "OUTPUT")]
     output: PathBuf,
     /// Which you type want to save
     #[arg(short, long, default_value = "supporting", env = "SAVE")]

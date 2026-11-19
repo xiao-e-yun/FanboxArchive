@@ -109,7 +109,8 @@ async fn post_task(
             post
         }
         Err(e) => {
-            error!("Failed to fetch post: {e}");
+            let source = get_source_link(&unimported.creator, &unimported.id);
+            error!("Failed to fetch post {source}: {e}");
             return Err(unimported);
         }
     };
@@ -120,7 +121,8 @@ async fn post_task(
             post
         }
         Err(e) => {
-            error!("Failed to download post: {e}");
+            let source = get_source_link(&unimported.creator, &unimported.id);
+            error!("Failed to download post {source}: {e}");
             return Err(unimported);
         }
     };
