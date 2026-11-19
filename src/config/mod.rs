@@ -4,7 +4,7 @@ use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use dotenv::dotenv;
 use fake_user_agent::get_rua;
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressBar};
 use indicatif_log_bridge::LogWrapper;
 use post_archiver_utils::{define_progress, Strategy};
 use save_type::SaveType;
@@ -157,3 +157,12 @@ define_progress!(ProgressSet [
     posts,
     files
 ]);
+
+/// Increments the progress bar by one when dropped, so early returns are still counted.
+pub struct IncOnDrop(pub ProgressBar);
+
+impl Drop for IncOnDrop {
+    fn drop(&mut self) {
+        self.0.inc(1);
+    }
+}

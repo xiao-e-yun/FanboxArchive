@@ -57,12 +57,14 @@ pub struct CachedCreator {
 
 impl CachedCreator {
     pub fn take_unimported_posts(&mut self, fee: u32) -> Vec<String> {
+        // Posts whose required fee is now covered by the current plan.
         let mut posts = vec![];
-        for (f, unimporteds) in self.unimports.iter_mut() {
-            if *f > fee {
+        self.unimports.retain(|f, unimporteds| {
+            if *f <= fee {
                 posts.extend(mem::take(unimporteds));
             }
-        }
+            !unimporteds.is_empty()
+        });
         posts
     }
 

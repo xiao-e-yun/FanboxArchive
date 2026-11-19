@@ -1,12 +1,14 @@
 mod body;
 
 use std::{
-    collections::HashMap, mem, path::Path,
+    collections::{HashMap, HashSet},
+    mem,
+    path::Path,
 };
 
 use crate::{
     api::{FanboxClient, FanboxDownloader},
-    config::ProgressSet,
+    config::{IncOnDrop, ProgressSet},
     context::Context,
     fanbox::Post,
     Manager,
@@ -20,7 +22,7 @@ use post_archiver::importer::{
 };
 use post_archiver_utils::{Result, TaskSet};
 use serde_json::json;
-use tempfile::{tempdir};
+use tempfile::tempdir;
 use tokio::sync::Mutex;
 
 pub async fn posts(
@@ -33,21 +35,30 @@ pub async fn posts(
     let post_tasks = TaskSet::new("posts").limit(4);
     let downloader = FanboxDownloader::new(progress.files.clone());
 
+    // The same post can arrive from the listing, `unimports` and `failed_posts`.
+    let mut seen = HashSet::new();
+
     while let Some(post_id) = posts_pipeline.recv().await {
+        if !seen.insert(post_id.clone()) {
+            debug!("Skipping duplicate post {post_id}");
+            progress.posts.inc(1);
+            continue;
+        }
+
         let progress = progress.clone();
         let client = client.clone();
         let downloader = downloader.clone();
         let manager = manager.clone();
         post_tasks
             .spawn(async move {
+                let _guard = IncOnDrop(progress.posts.clone());
+
                 let Ok(temp_dir) = tempdir() else {
                     error!("Failed to create temporary directory for post {post_id}");
                     return Err(post_id);
                 };
 
-                let result = post(client, downloader, post_id.clone(), temp_dir.path()).await;
-                progress.posts.inc(1);
-                let post = match result {
+                let post = match post(client, downloader, post_id.clone(), temp_dir.path()).await {
                     Ok(post) => {
                         debug!("Post downloaded: {}", post.source);
                         post
@@ -58,14 +69,29 @@ pub async fn posts(
                     }
                 };
 
-                let mut manager = manager.lock().await;
+                // `import_post` copies files with blocking I/O; keep it off the async runtime.
+                // `temp_dir` must outlive the import, since the files are copied from it.
                 let source = post.source.clone();
-                if let Err(e) = manager.importer().import_post(post) {
-                    error!("Failed to import post: {source}\n{e}");
-                    return Err(post_id);
+                let result = tokio::task::spawn_blocking(move || {
+                    manager.blocking_lock().importer().import_post(post)
+                })
+                .await;
+                drop(temp_dir);
+
+                match result {
+                    Ok(Ok(_)) => {
+                        info!("Post imported: {source}");
+                        Ok(())
+                    }
+                    Ok(Err(e)) => {
+                        error!("Failed to import post: {source}\n{e}");
+                        Err(post_id)
+                    }
+                    Err(e) => {
+                        error!("Import task panicked: {source}\n{e}");
+                        Err(post_id)
+                    }
                 }
-                info!("Post imported: {source}");
-                Ok(())
             })
             .await;
     }

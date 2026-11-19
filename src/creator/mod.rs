@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     api::FanboxClient,
-    config::{Config, ProgressSet},
+    config::{Config, IncOnDrop, ProgressSet},
     context::{CachedCreator, Context},
     fanbox::Creator,
     Manager,
@@ -40,7 +40,6 @@ pub async fn creators(
             match client.get_following_creators().await {
                 Ok(list) => {
                     info!("Found {} following creators", list.len());
-                    progress.creators.inc_length(list.len() as u64);
                     list
                 }
                 Err(e) => {
@@ -57,7 +56,6 @@ pub async fn creators(
             match client.get_supporting_creators().await {
                 Ok(list) => {
                     info!("Found {} supporting creators", list.len());
-                    progress.creators.inc_length(list.len() as u64);
                     list
                 }
                 Err(e) => {
@@ -67,8 +65,9 @@ pub async fn creators(
             }
         }
     );
-    creators.extend(following.into_iter().map(|c| c.into()));
+    // Supporting first: `HashSet::extend` keeps the first entry, and following creators have fee 0.
     creators.extend(supporting.into_iter().map(|c| c.into()));
+    creators.extend(following.into_iter().map(|c| c.into()));
     info!("");
 
     let total = creators.len();
@@ -78,6 +77,7 @@ pub async fn creators(
     let offset = total - filtered;
     info!("Excluded: {offset} creators");
     info!("Included: {filtered} creators");
+    progress.creators.inc_length(filtered as u64);
     info!("");
 
     display_creators(&creators);
@@ -129,6 +129,7 @@ pub async fn creator_posts(
         let posts_pipeline = posts_pipeline.clone();
         tasks
             .spawn(async move {
+                let _guard = IncOnDrop(pb);
                 let urls = client
                     .list_post_paninate(&cached, config.strategy())
                     .await
@@ -160,7 +161,6 @@ pub async fn creator_posts(
                     post_pb.inc_length(count);
                 }
 
-                pb.inc(1);
                 Ok((creator.user_id.clone(), cached))
             })
             .await;
