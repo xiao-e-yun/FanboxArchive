@@ -1,15 +1,18 @@
 use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::Once,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Once,
+    },
 };
 
 use chrono::NaiveDateTime;
 use indicatif::ProgressBar;
 use log::{debug, error};
-use post_archiver_utils::{ArchiveClient, Limit, RequestError, Result, Strategy};
+use post_archiver_utils::{browser_headers, ArchiveClient, Limit, RequestError, Result, Strategy};
 use reqwest::{
-    header::{self, HeaderMap},
+    header::{self, HeaderMap, HeaderValue},
     Client, StatusCode, Url,
 };
 use serde::{
@@ -33,6 +36,7 @@ pub type APIListCreatorPaginate = Vec<String>;
 #[derive(Debug, Clone)]
 pub struct FanboxClient {
     inner: ArchiveClient,
+    available: Arc<AtomicBool>,
 }
 
 impl FanboxClient {
@@ -55,104 +59,27 @@ impl FanboxClient {
                     ..Default::default()
                 },
             ),
+            available: Arc::new(AtomicBool::new(true)),
         }
     }
 
     pub fn generate_user_headers(user_agent: &str) -> HeaderMap {
-        let platform = if user_agent.contains("Windows") || user_agent.contains("Win64") {
-            "\"Windows\""
-        } else if user_agent.contains("Macintosh") || user_agent.contains("Mac OS X") {
-            "\"macOS\""
-        } else if user_agent.contains("Linux") || user_agent.contains("X11") {
-            "\"Linux\""
-        } else {
-            "\"Unknown\""
-        };
-
-        let mobile = if user_agent.contains("Mobile") {
-            "?1"
-        } else {
-            "?0"
-        };
-
-        let ua = if user_agent.contains("Edg/") {
-            "Edg"
-        } else if user_agent.contains("Chrome/") {
-            "Chromium"
-        } else if user_agent.contains("Firefox/") {
-            "Firefox"
-        } else if user_agent.contains("Safari/") && !user_agent.contains("Chrome/") {
-            "Safari"
-        } else {
-            "Unknown"
-        };
-
-        let version = user_agent
-            .split_whitespace()
-            .find(|part| part.starts_with(ua))
-            .unwrap_or("Unknown/12")
-            .split('/')
-            .nth(1)
-            .unwrap_or("12")
-            .split('.')
-            .next()
-            .unwrap_or("12");
-
-        let ua = format!("\"Chromium\";v=\"{version}\",")
-            + &match ua {
-                "Edg" => format!("\"Microsoft Edge\";v=\"{version}\""),
-                "Chromium" => format!("\"Google Chrome\";v=\"{version}\""),
-                "Firefox" => format!("\"Firefox\";v=\"{version}\""),
-                "Safari" => format!("\"Safari\";v=\"{version}\""),
-                _ => format!("\"{ua}\";v=\"{version}\""),
-            }
-            + ", \"Not_A Brand\";v=\"99\"";
-
-        HeaderMap::from_iter([
-            (header::ORIGIN, "https://www.fanbox.cc".parse().unwrap()),
-            (header::REFERER, "https://www.fanbox.cc/".parse().unwrap()),
-            (header::USER_AGENT, user_agent.parse().unwrap()),
-            (header::DNT, "1".parse().unwrap()),
-            (
-                header::ACCEPT_LANGUAGE,
-                "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7".parse().unwrap(),
-            ),
-            (
-                header::ACCEPT,
-                "application/json, text/plain, */*".parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-ch-ua"),
-                ua.parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-ch-ua-platform"),
-                platform.parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-ch-ua-mobile"),
-                mobile.parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-fetch-dest"),
-                "empty".parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-fetch-mode"),
-                "cors".parse().unwrap(),
-            ),
-            (
-                header::HeaderName::from_static("sec-fetch-site"),
-                "same-site".parse().unwrap(),
-            ),
-        ])
+        let mut headers = browser_headers(user_agent);
+        let referer: HeaderValue = "https://www.fanbox.cc/".parse().unwrap();
+        headers.insert(header::ORIGIN, referer.clone());
+        headers.insert(header::REFERER, referer);
+        headers
     }
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        if !self.available.load(Ordering::SeqCst) {
+            return Err(RequestError::InvalidSession.into());
+        }
+
         let response = match self.inner.fetch::<FanboxAPIResponse<T>>(url).await {
             Ok(response) => response,
             Err(RequestError::UnexpectedStatus(status, body)) => {
-                return Err(Self::status_error(status, body).into())
+                return Err(self.status_error(status, body).into())
             }
             Err(e) => return Err(e.into()),
         };
@@ -168,21 +95,25 @@ impl FanboxClient {
     }
 
     /// Map a non-success response using Fanbox's JSON `error` field when present.
-    fn status_error(status: StatusCode, body: String) -> RequestError {
+    fn status_error(&self, status: StatusCode, body: String) -> RequestError {
         let error = serde_json::from_str::<FanboxAPIResponse<IgnoredAny>>(&body)
             .map(|r| r.error)
             .unwrap_or_default();
 
+        static ONCE: Once = Once::new();
         match error.as_str() {
             "pop_key_registration_required" | "pop_signature_required" => {
-                static HINT: Once = Once::new();
-                HINT.call_once(|| {
+                ONCE.call_once(|| {
                     error!("Fanbox requires PoP key verification for this session ({error}).");
                     error!("Open https://www.fanbox.cc/pop?mode=register in your browser while logged in, then retry.");
                 });
+                self.available.store(false, Ordering::SeqCst);
                 RequestError::InvalidSession
             }
-            "general_error" => RequestError::InvalidSession,
+            "general_error" => {
+                self.available.store(false, Ordering::SeqCst);
+                RequestError::InvalidSession
+            }
             _ => RequestError::UnexpectedStatus(status, body),
         }
     }

@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::read_to_string,
-    mem,
     path::Path,
 };
 
@@ -12,7 +11,6 @@ use serde::{Deserialize, Serialize};
 pub struct Context {
     /// user_id: CachedCreator
     pub creators: HashMap<String, CachedCreator>,
-    pub failed_posts: Vec<String>,
 }
 
 impl Context {
@@ -30,21 +28,6 @@ impl Context {
         let json = serde_json::to_string(self).expect("Failed to serialize context");
         std::fs::write(path, json).expect("Failed to save context");
     }
-
-    pub fn get_creator(&self, user_id: &str, creator_id: &str) -> CachedCreator {
-        self.creators
-            .get(user_id)
-            .cloned()
-            .unwrap_or(CachedCreator {
-                last_updated: 0,
-                creator_id: creator_id.to_string(),
-                unimports: HashMap::new(),
-            })
-    }
-
-    pub fn creator(&mut self, user_id: &str) -> Option<CachedCreator> {
-        self.creators.remove(user_id)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -55,23 +38,10 @@ pub struct CachedCreator {
     pub unimports: HashMap<u32, HashSet<String>>,
 }
 
-impl CachedCreator {
-    pub fn take_unimported_posts(&mut self, fee: u32) -> Vec<String> {
-        // Posts whose required fee is now covered by the current plan.
-        let mut posts = vec![];
-        self.unimports.retain(|f, unimporteds| {
-            if *f <= fee {
-                posts.extend(mem::take(unimporteds));
-            }
-            !unimporteds.is_empty()
-        });
-        posts
-    }
-
-    pub fn push_unimport(&mut self, fee: u32, post_id: String) {
-        self.unimports
-            .entry(fee)
-            .or_default()
-            .insert(post_id);
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnimportedPost {
+    pub creator: String,
+    pub user: String,
+    pub id: String,
+    pub fee: u32,
 }

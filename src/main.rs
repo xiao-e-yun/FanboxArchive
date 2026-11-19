@@ -13,13 +13,13 @@ use config::{Config, ProgressSet};
 use context::Context;
 use creator::{creator_posts, creators};
 use fanbox::Creator;
-use log::{debug, info, warn};
+use log::{debug, info};
 use plyne::define_tasks;
 use post_archiver::{manager::PostArchiverManager, utils::VERSION};
-use post_archiver_utils::{display_metadata};
+use post_archiver_utils::{display_metadata, setup_database};
 use tokio::sync::Mutex;
 
-use crate::post::{failed_posts, posts};
+use crate::{context::UnimportedPost, post::posts};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -37,26 +37,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Output": config.output().display(),
     });
 
-    if !config.output().exists() {
-        warn!("Creating output folder");
-        std::fs::create_dir_all(config.output())?;
-    }
-
-    info!("Connecting to PostArchiver");
     let output = config.output().clone();
-
-    let manager = PostArchiverManager::open_or_create(&output)?;
-
+    let manager = setup_database(&output)?;
     let context = Mutex::new(context::Context::load(&output));
     let manager = Arc::new(Mutex::new(manager));
 
     let client = FanboxClient::new(&config);
     let progress = ProgressSet::new(&config.multi);
 
-    let FanboxSystemContext { context, .. } =
-        FanboxSystem::new(manager, config, client, context, progress)
-            .execute()
-            .await;
+    let system = FanboxSystem::new(manager, config, client, context, progress);
+    let FanboxSystemContext { context, .. } = system.execute().await;
 
     info!("All done!");
 
@@ -71,7 +61,7 @@ define_tasks! {
     FanboxSystem
     pipelines {
         creator_pipeline: Creator,
-        posts_pipeline: String,
+        posts_pipeline: UnimportedPost,
     }
     vars {
         manager: Manager,
@@ -84,6 +74,5 @@ define_tasks! {
         creators,
         creator_posts,
         posts,
-        failed_posts,
     }
 }

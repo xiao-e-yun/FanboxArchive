@@ -28,7 +28,7 @@ pub struct Post {
     #[serde(rename = "type")]
     pub ty: PostType,
     pub cover_image_url: Option<String>,
-    pub body: PostBody,
+    pub body: Option<PostBody>,
     pub excerpt: String,
     pub next_post: Option<PostShort>,
     pub prev_post: Option<PostShort>,

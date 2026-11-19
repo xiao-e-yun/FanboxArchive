@@ -1,6 +1,10 @@
-use std::collections::HashSet;
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    mem,
+};
 
 use futures::join;
+use indicatif::ProgressBar;
 use log::{error, info, warn};
 use plyne::{Input, Output};
 use post_archiver_utils::{Result, TaskSet};
@@ -10,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::{
     api::FanboxClient,
     config::{Config, IncOnDrop, ProgressSet},
-    context::{CachedCreator, Context},
+    context::{CachedCreator, Context, UnimportedPost},
     fanbox::Creator,
     Manager,
 };
@@ -89,7 +93,7 @@ pub async fn creators(
 
 pub async fn creator_posts(
     mut creator_pipeline: Output<Creator>,
-    posts_pipeline: Input<String>,
+    posts_pipeline: Input<UnimportedPost>,
     context: &Mutex<Context>,
     manager: &Manager,
     config: &Config,
@@ -100,77 +104,146 @@ pub async fn creator_posts(
         TaskSet::new("creators").limit(2);
 
     while let Some(creator) = creator_pipeline.recv().await {
-        let mut cached = context
-            .lock()
-            .await
-            .get_creator(&creator.user_id, &creator.creator_id);
+        let guard = IncOnDrop(progress.creators.clone());
 
+        // Read the cached creator
+        let mut cached = {
+            let mut ctx = context.lock().await;
+            let cached = ctx
+                .creators
+                .entry(creator.user_id.clone())
+                .or_insert(CachedCreator {
+                    last_updated: 0,
+                    creator_id: creator.creator_id.clone(),
+                    unimports: HashMap::new(),
+                });
+
+            CachedCreator {
+                last_updated: cached.last_updated,
+                creator_id: cached.creator_id.clone(),
+                unimports: cached
+                    .unimports
+                    .extract_if(|&fee, _| creator.fee >= fee)
+                    .collect(),
+            }
+        };
+
+        // check is creator ID has changed
         if creator.creator_id != cached.creator_id {
             warn!(
                 "Creator ID has changed: {} -> {}",
                 cached.creator_id, creator.creator_id
             );
-            let _ = patch_creator_source(manager, &cached, &creator)
-                .await
-                .inspect_err(|e| error!("Failed to update creator source: {}", e));
+            if let Err(e) = patch_creator_source(manager, &cached, &creator).await {
+                error!("Failed to update creator source: {e}");
+            }
             cached.creator_id = creator.creator_id.clone();
         }
 
-        let unimported_posts = cached.take_unimported_posts(creator.fee);
-        progress.posts.inc_length(unimported_posts.len() as u64);
-        for post in unimported_posts {
-            posts_pipeline.send(post).unwrap();
+        // Retrieve unimported posts
+        let mut count = 0;
+        for (fee, unimported) in cached.unimports.drain() {
+            count += unimported.len() as u64;
+            for id in unimported {
+                posts_pipeline
+                    .send(UnimportedPost {
+                        creator: creator.creator_id.clone(),
+                        user: creator.user_id.clone(),
+                        fee,
+                        id,
+                    })
+                    .unwrap();
+            }
         }
+        progress.posts.inc_length(count);
 
-        let pb = progress.creators.clone();
-        let post_pb = progress.posts.clone();
-        let client = client.clone();
-        let config = config.clone();
-        let posts_pipeline = posts_pipeline.clone();
+        // Fetch creator posts
         tasks
-            .spawn(async move {
-                let _guard = IncOnDrop(pb);
-                let urls = client
-                    .list_post_paninate(&cached, config.strategy())
-                    .await
-                    .inspect_err(|e| error!("failed to fetch creator pagination: {e}"))?;
-
-                for url in urls {
-                    let posts = client
-                        .list_post(&url, cached.last_updated, config.strategy())
-                        .await
-                        .inspect_err(|e| error!("failed to list creator posts: {e}"))?;
-
-                    let mut count = 0;
-                    for post in posts {
-                        cached.last_updated =
-                            cached.last_updated.max(post.published_datetime.timestamp());
-
-                        if creator.fee < post.fee_required {
-                            cached.push_unimport(post.fee_required, post.id);
-                            continue;
-                        }
-
-                        if !config.filter_post(&post) {
-                            continue;
-                        }
-
-                        posts_pipeline.send(post.id).unwrap();
-                        count += 1;
-                    }
-                    post_pb.inc_length(count);
-                }
-
-                Ok((creator.user_id.clone(), cached))
-            })
+            .spawn(creator_posts_task(
+                posts_pipeline.clone(),
+                creator,
+                cached,
+                client.clone(),
+                config.clone(),
+                progress.posts.clone(),
+                guard,
+            ))
             .await;
     }
 
     let mut context = context.lock().await;
-    for (id, cached) in tasks.join_all().await.into_iter().flatten() {
-        context.creators.insert(id, cached);
+    for (id, mut cached) in tasks.join_all().await.into_iter().flatten() {
+        match context.creators.entry(id) {
+            Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                mem::swap(existing, &mut cached);
+                for (fee, unimported) in cached.unimports {
+                    existing
+                        .unimports
+                        .entry(fee)
+                        .or_default()
+                        .extend(unimported);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(cached);
+            }
+        }
     }
     progress.creators.finish();
+}
+
+async fn creator_posts_task(
+    posts_pipeline: Input<UnimportedPost>,
+    creator: Creator,
+    mut cached: CachedCreator,
+    client: FanboxClient,
+    config: Config,
+    post_pb: ProgressBar,
+    _guard: IncOnDrop,
+) -> Result<(String, CachedCreator)> {
+    let urls = client
+        .list_post_paninate(&cached, config.strategy())
+        .await
+        .inspect_err(|e| error!("failed to fetch creator pagination: {e}"))?;
+
+    for url in urls {
+        let posts = client
+            .list_post(&url, cached.last_updated, config.strategy())
+            .await
+            .inspect_err(|e| error!("failed to list creator posts: {e}"))?;
+
+        let mut count = 0;
+        for post in posts {
+            cached.last_updated = cached.last_updated.max(post.published_datetime.timestamp());
+
+            if post.is_restricted {
+                cached
+                    .unimports
+                    .entry(post.fee_required)
+                    .or_default()
+                    .insert(post.id);
+                continue;
+            }
+
+            if !config.filter_post(&post) {
+                continue;
+            }
+
+            posts_pipeline
+                .send(UnimportedPost {
+                    id: post.id,
+                    fee: post.fee_required,
+                    user: creator.user_id.clone(),
+                    creator: creator.creator_id.clone(),
+                })
+                .unwrap();
+            count += 1;
+        }
+        post_pb.inc_length(count);
+    }
+
+    Ok((creator.user_id.clone(), cached))
 }
 
 async fn patch_creator_source(
