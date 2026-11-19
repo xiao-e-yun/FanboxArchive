@@ -1,17 +1,21 @@
 use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
+    sync::Once,
 };
 
 use chrono::NaiveDateTime;
 use indicatif::ProgressBar;
-use log::debug;
+use log::{debug, error};
 use post_archiver_utils::{ArchiveClient, Limit, RequestError, Result, Strategy};
 use reqwest::{
     header::{self, HeaderMap},
-    Client, Url,
+    Client, StatusCode, Url,
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{
+    de::{DeserializeOwned, IgnoredAny},
+    Deserialize,
+};
 
 use crate::{
     config::Config,
@@ -145,7 +149,13 @@ impl FanboxClient {
     }
 
     pub async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        let response = self.inner.fetch::<FanboxAPIResponse<T>>(url).await?;
+        let response = match self.inner.fetch::<FanboxAPIResponse<T>>(url).await {
+            Ok(response) => response,
+            Err(RequestError::UnexpectedStatus(status, body)) => {
+                return Err(Self::status_error(status, body).into())
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         match response.body {
             Some(body) => Ok(body),
@@ -154,6 +164,26 @@ impl FanboxClient {
                 _ => RequestError::InvalidResponse(response.error),
             }
             .into()),
+        }
+    }
+
+    /// Map a non-success response using Fanbox's JSON `error` field when present.
+    fn status_error(status: StatusCode, body: String) -> RequestError {
+        let error = serde_json::from_str::<FanboxAPIResponse<IgnoredAny>>(&body)
+            .map(|r| r.error)
+            .unwrap_or_default();
+
+        match error.as_str() {
+            "pop_key_registration_required" | "pop_signature_required" => {
+                static HINT: Once = Once::new();
+                HINT.call_once(|| {
+                    error!("Fanbox requires PoP key verification for this session ({error}).");
+                    error!("Open https://www.fanbox.cc/pop?mode=register in your browser while logged in, then retry.");
+                });
+                RequestError::InvalidSession
+            }
+            "general_error" => RequestError::InvalidSession,
+            _ => RequestError::UnexpectedStatus(status, body),
         }
     }
 
